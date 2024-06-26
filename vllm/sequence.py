@@ -794,6 +794,9 @@ class SamplerOutput:
     # Spec decode metrics populated by workers.
     spec_decode_worker_metrics: Optional["SpecDecodeWorkerMetrics"] = None
 
+    # Optional prefill hidden states from the model.
+    prefill_hidden_states: Optional[torch.Tensor] = None
+
     # Optional last hidden states from the model.
     hidden_states: Optional[torch.Tensor] = None
 
@@ -863,7 +866,7 @@ class HiddenStates:
 
     def __init__(self, seq_group_metadata_list: List[SequenceGroupMetadata],
                  hidden_states: torch.Tensor):
-        assert len(seq_group_metadata_list) == len(hidden_states)
+        # assert len(seq_group_metadata_list) == len(hidden_states)
         self.seq_ids: List[int] = get_all_seq_ids(seq_group_metadata_list)
         self.hidden_states: torch.Tensor = hidden_states
 

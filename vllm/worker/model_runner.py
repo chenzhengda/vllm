@@ -5,6 +5,7 @@ from collections import defaultdict
 from typing import Dict, List, NamedTuple, Optional, Set, Tuple, Union
 
 import numpy as np
+from sympy import N
 import torch
 import torch.nn as nn
 
@@ -664,6 +665,7 @@ class ModelRunner:
     def prepare_input_tensors(
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
+        previous_hidden_states: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, AttentionMetadata, SamplingMetadata,
                Set[LoRARequest], LoRAMapping, Dict[str, torch.Tensor]]:
         if self.is_driver_worker:
@@ -702,6 +704,9 @@ class ModelRunner:
             }
             if attn_metadata:
                 metadata_dict.update(attn_metadata.asdict_zerocopy())
+
+            in_hidden_states = previous_hidden_states
+            metadata_dict["in_hidden_states"] = previous_hidden_states
             broadcast_tensor_dict(metadata_dict, src=0)
         else:
             metadata_dict = broadcast_tensor_dict(src=0)
@@ -712,6 +717,9 @@ class ModelRunner:
             lora_mapping = metadata_dict.pop("lora_mapping")
             lora_requests = metadata_dict.pop("lora_requests")
             multi_modal_kwargs = metadata_dict.pop("multi_modal_kwargs")
+
+            in_hidden_states = metadata_dict.pop("in_hidden_states")
+
             if metadata_dict:
                 attn_metadata = self.attn_backend.make_metadata(
                     **metadata_dict)
@@ -726,18 +734,20 @@ class ModelRunner:
 
         return (input_tokens, input_positions, attn_metadata,
                 sampling_metadata, lora_requests, lora_mapping,
-                multi_modal_kwargs)
+                multi_modal_kwargs, in_hidden_states)
 
     @torch.inference_mode()
     def execute_model(
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
         kv_caches: List[torch.Tensor],
+        previous_hidden_states: Optional[torch.Tensor] = None,
     ) -> Optional[SamplerOutput]:
         (input_tokens, input_positions, attn_metadata, sampling_metadata,
-         lora_requests, lora_mapping, multi_modal_kwargs
-         ) = self.prepare_input_tensors(seq_group_metadata_list)
-
+         lora_requests, lora_mapping, multi_modal_kwargs,
+         in_hidden_states) = self.prepare_input_tensors(
+             seq_group_metadata_list, previous_hidden_states)
+        # print(f"{self.is_driver_worker=}----{self.model_config.hf_config.model_type=}----{in_hidden_states=}")
         if self.lora_config:
             self.set_active_loras(lora_requests, lora_mapping)
 
@@ -750,13 +760,23 @@ class ModelRunner:
         else:
             model_executable = self.model
 
-        hidden_states = model_executable(
-            input_ids=input_tokens,
-            positions=input_positions,
-            kv_caches=kv_caches,
-            attn_metadata=attn_metadata,
-            **multi_modal_kwargs,
-        )
+        if in_hidden_states is not None:
+            hidden_states = model_executable(
+                input_ids=input_tokens,
+                positions=input_positions,
+                previous_hidden_states=in_hidden_states,
+                kv_caches=kv_caches,
+                attn_metadata=attn_metadata,
+                **multi_modal_kwargs,
+            )
+        else:
+            hidden_states = model_executable(
+                input_ids=input_tokens,
+                positions=input_positions,
+                kv_caches=kv_caches,
+                attn_metadata=attn_metadata,
+                **multi_modal_kwargs,
+            )
 
         # Compute the logits.
         logits = self.model.compute_logits(hidden_states, sampling_metadata)
@@ -771,14 +791,23 @@ class ModelRunner:
             sampling_metadata=sampling_metadata,
         )
 
-        if self.return_hidden_states:
+        if self.return_hidden_states or self.model_config.hf_config.model_type in [
+                "eagle"
+        ]:
             # we only need to pass hidden states of most recent token
             assert seq_group_metadata_list is not None
-            if seq_group_metadata_list[0].is_prompt:
+            if prefill_meta is not None:
+                output.prefill_hidden_states = hidden_states.roll(shifts=1,
+                                                                  dims=0)
+                output.prefill_hidden_states = output.prefill_hidden_states.masked_fill_(
+                    (input_positions == 0).unsqueeze(-1), 0)
                 hidden_states = hidden_states.index_select(
                     0, sampling_metadata.selected_token_indices)
-            output.hidden_states = hidden_states
-
+                output.hidden_states = hidden_states
+            else:
+                hidden_states = hidden_states.index_select(
+                    0, sampling_metadata.selected_token_indices)
+                output.hidden_states = hidden_states
         return output
 
     @torch.inference_mode()
@@ -853,7 +882,7 @@ class ModelRunner:
         # Run the model with the dummy inputs.
         num_layers = self.model_config.get_num_layers(self.parallel_config)
         kv_caches = [None] * num_layers
-        self.execute_model(seqs, kv_caches)
+        self.execute_model(seqs, kv_caches, None)
         torch.cuda.synchronize()
         return
 

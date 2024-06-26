@@ -13,6 +13,8 @@ from vllm.sequence import (CompletionSequenceGroupOutput, ExecuteModelRequest,
 from vllm.spec_decode.batch_expansion import BatchExpansionTop1Scorer
 from vllm.spec_decode.interfaces import (SpeculativeProposals,
                                          SpeculativeScorer, SpeculativeScores)
+from vllm.spec_decode.medusa_worker import MedusaWorker
+from vllm.spec_decode.eagle_worker import EagleWorker
 from vllm.spec_decode.metrics import AsyncMetricsCollector
 from vllm.spec_decode.mlp_speculator_worker import MLPSpeculatorWorker
 from vllm.spec_decode.multi_step_worker import MultiStepWorker
@@ -106,6 +108,14 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             proposer_worker = NGramWorker(**draft_worker_kwargs)
             proposer_worker.set_ngram_window_size(ngram_prompt_lookup_min,
                                                   ngram_prompt_lookup_max)
+        elif draft_worker_kwargs[
+                "model_config"].hf_config.model_type == "medusa":
+            proposer_worker = MedusaWorker(**draft_worker_kwargs)
+            disable_bonus_tokens = False
+        elif draft_worker_kwargs[
+                "model_config"].hf_config.model_type == "eagle":
+            proposer_worker = EagleWorker(**draft_worker_kwargs)
+            disable_bonus_tokens = False
         elif draft_worker_kwargs[
                 "model_config"].hf_config.model_type == "mlp_speculator":
             proposer_worker = MLPSpeculatorWorker(**draft_worker_kwargs)
@@ -314,7 +324,6 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         # to stop trading off throughput for latency.
         disable_all_speculation = (execute_model_req.running_queue_size >=
                                    self.disable_by_batch_size)
-
         return disable_all_speculation
 
     def _maybe_disable_speculative_tokens(
@@ -340,8 +349,6 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         not called, meaning that the kv-cache in proposer for requests is not
         updated, so they cannot enable spec decode in the rest decoding.
         """
-        if not skip_proposer:
-            self.proposer_worker.execute_model(execute_model_req)
 
         sampler_output = self.scorer_worker.execute_model(execute_model_req)
         assert len(sampler_output) == 1
@@ -356,6 +363,12 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             else:
                 self.previous_hidden_states.update(
                     execute_model_req.seq_group_metadata_list, hidden_states)
+
+        if not skip_proposer:
+            execute_model_req.previous_hidden_states = HiddenStates(
+                execute_model_req.seq_group_metadata_list,
+                sampler_output.prefill_hidden_states)
+            self.proposer_worker.execute_model(execute_model_req)
 
         # Clear device tensors from sampler output. This reduces communication
         # overhead when the engine runs in a different process than the workers.
@@ -377,16 +390,28 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         if not data:
             return False
         num_lookahead_slots = data["num_lookahead_slots"]
-
+        disable_all_speculation = data["disable_all_speculation"]
         # Even if num_lookahead_slots is zero, we want to run the proposer model
         # as it may have KV.
         #
         # We run the proposer once per lookahead slot. In the future we should
         # delegate how many times it runs to the proposer.
-        for _ in range(max(num_lookahead_slots, 1)):
+        no_spec = num_lookahead_slots == 0 or disable_all_speculation
+
+        # For no_spec case, execute scorer first since that's how it's done
+        # in driver worker
+        if no_spec:
+            self.scorer_worker.execute_model()
+
+        num_steps = num_lookahead_slots if isinstance(self.proposer_worker,
+                                                      MultiStepWorker) else 1
+        for _ in range(max(num_steps, 1)):
+            # for _ in range(max(num_lookahead_slots, 1)):
             self.proposer_worker.execute_model()
 
-        self.scorer_worker.execute_model()
+        # self.scorer_worker.execute_model()
+        if not no_spec:
+            self.scorer_worker.execute_model()
         return True
 
     @nvtx_range("spec_decode_worker._run_speculative_decoding_step")
@@ -410,6 +435,8 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         # Generate proposals using draft worker.
         proposals = self.proposer_worker.get_spec_proposals(execute_model_req)
 
+        execute_model_req.previous_hidden_states = None
+
         proposal_scores = self.scorer.score_proposals(
             execute_model_req,
             proposals,
@@ -418,7 +445,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         accepted_token_ids, target_logprobs = self._verify_tokens(
             execute_model_req.seq_group_metadata_list, proposal_scores,
             proposals, execute_model_req.num_lookahead_slots)
-
+        # print(f"{accepted_token_ids=}")
         return self._create_output_sampler_list(
             execute_model_req.seq_group_metadata_list,
             accepted_token_ids,
@@ -588,7 +615,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         if maybe_rejsample_metrics is not None:
             sampler_output_list[
                 0].spec_decode_worker_metrics = maybe_rejsample_metrics
-
+        # print(f"{maybe_rejsample_metrics=}")
         return sampler_output_list
 
     @cached_property

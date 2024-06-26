@@ -6,7 +6,8 @@ from transformers import PretrainedConfig
 from vllm.envs import VLLM_USE_MODELSCOPE
 from vllm.logger import init_logger
 from vllm.transformers_utils.configs import (ChatGLMConfig, DbrxConfig,
-                                             JAISConfig, MLPSpeculatorConfig,
+                                             JAISConfig, MedusaConfig,
+                                             EagleConfig, MLPSpeculatorConfig,
                                              MPTConfig, RWConfig)
 
 if VLLM_USE_MODELSCOPE:
@@ -24,6 +25,8 @@ _CONFIG_REGISTRY: Dict[str, Type[PretrainedConfig]] = {
     "RefinedWebModel": RWConfig,  # For tiiuae/falcon-7b(-instruct)
     "jais": JAISConfig,
     "mlp_speculator": MLPSpeculatorConfig,
+    "medusa": MedusaConfig,
+    "eagle": EagleConfig,
 }
 
 for name, cls in _CONFIG_REGISTRY.items():

@@ -75,8 +75,9 @@ class Worker(WorkerBase):
         speculative_args = {} if speculative_config is None \
             or (speculative_config.draft_model_config.model ==
                 model_config.model) \
-              or (speculative_config.draft_model_config.hf_config.model_type !=
-                  "mlp_speculator") else {"return_hidden_states": True}
+            or (speculative_config.draft_model_config.hf_config.model_type
+                not in ["eagle", "medusa", "mlp_speculator"]) \
+                    else {"return_hidden_states": True}
 
         ModelRunnerClass = (EmbeddingModelRunner if
                             self.model_config.embedding_mode else ModelRunner)
@@ -286,9 +287,13 @@ class Worker(WorkerBase):
         # If there is no input, we don't need to execute the model.
         if num_seq_groups == 0:
             return []
-
-        output = self.model_runner.execute_model(seq_group_metadata_list,
-                                                 self.gpu_cache)
+        if execute_model_req.previous_hidden_states is not None:
+            output = self.model_runner.execute_model(
+                seq_group_metadata_list, self.gpu_cache,
+                execute_model_req.previous_hidden_states.hidden_states)
+        else:
+            output = self.model_runner.execute_model(seq_group_metadata_list,
+                                                     self.gpu_cache, None)
 
         # Worker only supports single-step execution. Wrap the output in a list
         # to conform to interface.
