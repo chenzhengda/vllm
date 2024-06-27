@@ -18,7 +18,7 @@ from vllm.model_executor.model_loader.tensorizer import TensorizerConfig
 from vllm.sequence import ExecuteModelRequest
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.embedding_model_runner import EmbeddingModelRunner
-from vllm.worker.model_runner import GPUModelRunnerBase, ModelRunner
+from vllm.worker.model_runner import GPUModelRunnerBase, ModelRunner, EagleModelRunner
 from vllm.worker.worker_base import LocalOrDistributedWorkerBase, WorkerInput
 
 
@@ -75,12 +75,14 @@ class Worker(LocalOrDistributedWorkerBase):
             or (speculative_config.draft_model_config.model ==
                 model_config.model) \
             or (speculative_config.draft_model_config.hf_config.model_type
-                not in ["medusa", "mlp_speculator"]) \
+                not in ["eagle", "medusa", "mlp_speculator"]) \
                     else {"return_hidden_states": True}
 
         ModelRunnerClass: Type[GPUModelRunnerBase] = ModelRunner
         if self.model_config.embedding_mode:
             ModelRunnerClass = EmbeddingModelRunner
+        if self.model_config.hf_config.model_type in ["eagle"]:
+            ModelRunnerClass = EagleModelRunner
         self.model_runner: GPUModelRunnerBase = ModelRunnerClass(
             model_config,
             parallel_config,

@@ -225,10 +225,16 @@ class LocalOrDistributedWorkerBase(WorkerBase):
 
             worker_input: WorkerInput = self.prepare_worker_input(
                 execute_model_req=execute_model_req)
-            model_input: ModelRunnerInputBase = (
-                self.model_runner.prepare_model_input(
-                    execute_model_req.seq_group_metadata_list))
-
+            if execute_model_req.previous_hidden_states is not None:
+                model_input: ModelRunnerInputBase = (
+                    self.model_runner.prepare_model_input(
+                        execute_model_req.seq_group_metadata_list, 
+                        execute_model_req.previous_hidden_states.hidden_states))
+            else:
+                model_input: ModelRunnerInputBase = (
+                    self.model_runner.prepare_model_input(
+                        execute_model_req.seq_group_metadata_list))
+            
             if self.do_metadata_broadcast:
                 broadcast_data = worker_input.as_broadcastable_tensor_dict()
                 broadcast_data.update(

@@ -7,8 +7,7 @@ from vllm.sequence import (ExecuteModelRequest, SamplerOutput,
 from vllm.spec_decode.interfaces import (SpeculativeProposals,
                                          SpeculativeProposer)
 from vllm.spec_decode.proposer_worker_base import ProposerWorkerBase
-from vllm.spec_decode.util import sampler_output_to_torch
-
+from vllm.spec_decode.util import sampler_output_to_torch, nvtx_range
 
 class Top1Proposer(SpeculativeProposer):
     """Helper class which separates out sequences which would exceed the max
@@ -39,6 +38,7 @@ class Top1Proposer(SpeculativeProposer):
         self.max_proposal_len = max_proposal_len
         self._vocab_size = vocab_size
 
+    @nvtx_range("proposer_worker.get_spec_proposals")
     def get_spec_proposals(
         self,
         execute_model_req: ExecuteModelRequest,
