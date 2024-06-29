@@ -11,6 +11,7 @@ from vllm.sequence import (CompletionSequenceGroupOutput, ExecuteModelRequest,
                            HiddenStates, SamplerOutput, SequenceGroupMetadata,
                            get_all_seq_ids)
 from vllm.spec_decode.batch_expansion import BatchExpansionTop1Scorer
+from vllm.spec_decode.eagle_scorer import EagleScorer
 from vllm.spec_decode.interfaces import (SpeculativeProposals,
                                          SpeculativeScorer, SpeculativeScores)
 from vllm.spec_decode.medusa_worker import MedusaWorker
@@ -205,10 +206,18 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
 
         self._metrics.init_gpu_tensors(self.rank)
         self.rejection_sampler.init_gpu_tensors(self.rank)
-        self.scorer = BatchExpansionTop1Scorer(
-            scorer_worker=self.scorer_worker,
-            device=self.device,
-            vocab_size=self._vocab_size)
+        
+        if (self.scorer_worker.model_runner.model.tree_choices is not None and
+             self.scorer_worker.model_runner.model.tree_choices != [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0, 0]]) :
+            self.scorer = EagleScorer(
+                scorer_worker=self.scorer_worker,
+                device=self.device,
+                vocab_size=self._vocab_size)
+        else:
+            self.scorer = BatchExpansionTop1Scorer(
+                scorer_worker=self.scorer_worker,
+                device=self.device,
+                vocab_size=self._vocab_size)
 
         self._configure_model_sampler_for_spec_decode()
 
@@ -290,7 +299,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
 
         disable_all_speculation = self._should_disable_all_speculation(
             execute_model_req)
-        num_lookahead_slots = execute_model_req.num_lookahead_slots
+        num_speculative_tokens = execute_model_req.num_speculative_tokens
 
         # Broadcast how many lookahead slots are scheduled for this step, and
         # whether all speculation is disabled, to all non-driver workers.
@@ -299,14 +308,13 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         # dynamically, the non-driver workers won't know unless we perform a
         # communication to inform them.
         broadcast_dict = dict(
-            num_lookahead_slots=num_lookahead_slots,
+            num_speculative_tokens=num_speculative_tokens,
             disable_all_speculation=disable_all_speculation,
         )
         broadcast_tensor_dict(broadcast_dict, src=self._driver_rank)
 
         assert execute_model_req.seq_group_metadata_list is not None, (
             "speculative decoding requires non-None seq_group_metadata_list")
-
         self._maybe_disable_speculative_tokens(
             disable_all_speculation, execute_model_req.seq_group_metadata_list)
 
@@ -318,14 +326,14 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         # 3. No request: There are no requests in the batch.
         # In any of these cases, the proposer and scorer workers
         # are called normally.
-        if num_lookahead_slots == 0 or len(
+        if num_speculative_tokens == 0 or len(
                 execute_model_req.seq_group_metadata_list
         ) == 0 or disable_all_speculation:
             return self._run_no_spec(execute_model_req,
                                      skip_proposer=disable_all_speculation)
 
         return self._run_speculative_decoding_step(execute_model_req,
-                                                   num_lookahead_slots)
+                                                   num_speculative_tokens)
 
     @torch.inference_mode()
     def start_worker_execution_loop(self) -> None:
@@ -398,7 +406,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
 
     def _run_non_driver_rank(self) -> bool:
         """Run proposer and verifier model in non-driver workers. This is used
-        for both speculation cases (num_lookahead_slots>0) and non-speculation
+        for both speculation cases (num_speculative_tokens>0) and non-speculation
         cases (e.g. prefill).
 
         Returns True iff there are remaining sequences to process.
@@ -408,37 +416,51 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         data = broadcast_tensor_dict(src=self._driver_rank)
         if not data:
             return False
-        num_lookahead_slots = data["num_lookahead_slots"]
-        disable_all_speculation = data["disable_all_speculation"]
+        
+        if "num_speculative_tokens" in data:
+            num_speculative_tokens = data["num_speculative_tokens"]
+            disable_all_speculation = data["disable_all_speculation"]
 
-        # Even if num_lookahead_slots is zero, we want to run the proposer model
-        # as it may have KV.
-        #
-        # We run the proposer once per lookahead slot. In the future we should
-        # delegate how many times it runs to the proposer.
-        no_spec = num_lookahead_slots == 0 or disable_all_speculation
+            # Even if num_speculative_tokens is zero, we want to run the proposer model
+            # as it may have KV.
+            #
+            # We run the proposer once per lookahead slot. In the future we should
+            # delegate how many times it runs to the proposer.
+            no_spec = num_speculative_tokens == 0 or disable_all_speculation
 
-        # For no_spec case, execute scorer first since that's how it's done
-        # in driver worker
-        if no_spec:
-            self.scorer_worker.execute_model()
+            # For no_spec case, execute scorer first since that's how it's done
+            # in driver worker
+            if no_spec:
+                self.scorer_worker.execute_model()
 
-        num_steps = num_lookahead_slots if isinstance(self.proposer_worker,
-                                                      MultiStepWorker) else 1
-        for _ in range(max(num_steps, 1)):
-            # for _ in range(max(num_lookahead_slots, 1)):
-        # for _ in range(max(num_lookahead_slots, 1)):
-            self.proposer_worker.execute_model()
+            # num_steps = num_speculative_tokens if isinstance(self.proposer_worker,
+            #                                               MultiStepWorker) else 1
 
-        # self.scorer_worker.execute_model()
-        if not no_spec:
-            self.scorer_worker.execute_model()
-        return True
+            if isinstance(self.proposer_worker,MultiStepWorker):
+                if(self.proposer_worker.model_runner.model.config.tree_choices != [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0, 0]]):
+                    num_steps = 1
+                else:
+                    num_steps = num_speculative_tokens
+            else:
+                num_steps = 1
+
+            for _ in range(max(num_steps, 1)):
+                # for _ in range(max(num_speculative_tokens, 1)):
+            # for _ in range(max(num_speculative_tokens, 1)):
+                self.proposer_worker.execute_model()
+
+            # self.scorer_worker.execute_model()
+            if not no_spec:
+                self.scorer_worker.execute_model()
+            return True
+        elif "defragment_accepted_kv_blocks" in data:
+            self.scorer_worker.defragment_accepted_kv_blocks()
+            return True
 
     @nvtx_range("spec_decode_worker._run_speculative_decoding_step")
     def _run_speculative_decoding_step(
             self, execute_model_req: ExecuteModelRequest,
-            num_lookahead_slots: int) -> List[SamplerOutput]:
+            num_speculative_tokens: int) -> List[SamplerOutput]:
         """Execute a single step of speculative decoding.
 
         This invokes the proposer worker to get k speculative tokens for each
@@ -447,7 +469,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         Returns a list of SamplerOutput, each containing a single token per
         sequence.
         """
-        assert num_lookahead_slots == execute_model_req.num_lookahead_slots
+        assert num_speculative_tokens == execute_model_req.num_speculative_tokens
 
         # Pass last hidden states from target model to proposer
         execute_model_req.previous_hidden_states = self.previous_hidden_states
@@ -463,15 +485,136 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             proposals,
         )
 
-        accepted_token_ids, target_logprobs = self._verify_tokens(
-            execute_model_req.seq_group_metadata_list, proposal_scores,
-            proposals, execute_model_req.num_lookahead_slots)
+        # FIXME: (chenzhengda) hard core for top1 and tree scorer dispatch
+        if (self.scorer_worker.model_runner.model.tree_choices is not None and
+             self.scorer_worker.model_runner.model.tree_choices != [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0, 0]]) :
+            best_candidate_index, accepted_token_ids, target_logprobs  = self._verify_tokens_for_eagle(
+                execute_model_req.seq_group_metadata_list, proposal_scores,
+                proposals, execute_model_req.num_speculative_tokens)
+
+            broadcast_dict = dict(
+                defragment_accepted_kv_blocks=True,
+            )
+            broadcast_tensor_dict(broadcast_dict, src=self._driver_rank)
+
+            self._defragment_accepted_kv_blocks(execute_model_req, proposal_scores,
+                                                proposals, best_candidate_index, accepted_token_ids)
+
+            
+        else:
+            accepted_token_ids, target_logprobs = self._verify_tokens(
+                execute_model_req.seq_group_metadata_list, proposal_scores,
+                proposals, execute_model_req.num_speculative_tokens)
+
         print(f"{accepted_token_ids=}")
         return self._create_output_sampler_list(
             execute_model_req.seq_group_metadata_list,
             accepted_token_ids,
             target_logprobs=target_logprobs,
-            k=execute_model_req.num_lookahead_slots)
+            k=execute_model_req.num_speculative_tokens)
+
+    @nvtx_range("spec_decode_worker._defragment_accepted_kv_blocks")
+    def _defragment_accepted_kv_blocks(
+        self,
+        execute_model_req: ExecuteModelRequest,
+        proposal_scores: SpeculativeScores,
+        proposals: SpeculativeProposals,
+        best_candidate_index: torch.Tensor,
+        accepted_token_ids: torch.Tensor,
+    ):
+        # pass
+        self.scorer_worker.defragment_accepted_kv_blocks(
+            execute_model_req, best_candidate_index, accepted_token_ids)
+        # self.proposer_worker.defragment_accepted_kv_blocks(
+        #     execute_model_req, best_candidate_index, accepted_token_ids, proposal_scores.extra_tensor_data)
+
+
+    @nvtx_range("spec_decode_worker._verify_tokens")
+    def _verify_tokens_for_eagle(
+        self,
+        seq_group_metadata_list: List[SequenceGroupMetadata],
+        proposal_scores: SpeculativeScores,
+        proposals: SpeculativeProposals,
+        max_proposal_len: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Determine which speculative tokens are accepted using the
+        probabilities of each token according to the proposer and scorer models.
+
+        Returns a tuple of Tensors, one for the accepted token ids and one for
+        the logprobs according to the scoring model.
+        """
+        proposal_lens_list = proposals.proposal_lens.tolist()
+
+        # vLLM currently only supports proposal lens equal to zero or the batch
+        # proposal len. This adds some complexity (splitting the batch into spec
+        # and non spec sequences) and should be removed in the future. It can be
+        # done by supporting per-sequence proposal lens.
+        _, spec_indices = split_batch_by_proposal_len(
+            seq_group_metadata_list,
+            proposal_lens_list,
+            select_proposal_len_zero=False)
+        _, non_spec_indices = split_batch_by_proposal_len(
+            seq_group_metadata_list,
+            proposal_lens_list,
+            select_proposal_len_zero=True)
+        original_indices = spec_indices + non_spec_indices
+
+        proposal_verifier_token_ids = proposal_scores.token_ids[
+            spec_indices, :, :-1]
+
+        # Get non-speculative sampled tokens from target model. non-speculative sampled tokens needs no N candidate
+        non_spec_token_ids = proposal_scores.token_ids[non_spec_indices, 0]
+
+        # Get bonus tokens from target model.
+        bonus_token_ids = proposal_scores.token_ids[spec_indices, :, -1:]
+
+        # Get proposed tokens.
+        proposal_token_ids = proposals.proposal_token_ids[spec_indices, :]
+
+        # proposal_token_ids[:, 0, :] = torch.zeros(proposal_token_ids[: 0, :].size())
+
+        accepted_token_ids, best_candidate_index = self.rejection_sampler.forward_for_naive_eagle(
+            target_token_ids=proposal_verifier_token_ids,
+            bonus_token_ids=bonus_token_ids,
+            draft_token_ids=proposal_token_ids,
+        )
+
+        # Append output tokens from non-speculative sequences to
+        # the accepted token ids tensor.
+        non_spec_token_ids = non_spec_token_ids.expand(-1, max_proposal_len +
+                                                       1).clone()
+        non_spec_token_ids[:, 1:] = -1
+        accepted_token_ids = torch.cat(
+            [accepted_token_ids, non_spec_token_ids])
+
+        # Select log probabilities according to best_candidate_index
+        logprobs = proposal_scores.logprobs[
+            torch.arange(proposal_scores.logprobs.size(0)),
+            best_candidate_index, :, :]
+
+        # Rearrange so that results are in the order of the original seq group
+        # metadata.
+        accepted_token_ids[original_indices] = accepted_token_ids.clone()
+
+        # Select proposal_scores.hidden_states according to best_candidate_index
+        hidden_states = proposal_scores.hidden_states[
+                torch.arange(proposal_scores.hidden_states.size(0)),
+                best_candidate_index, :, ]
+        if hidden_states is not None:
+            # Contract hidden states based on accepted tokens
+            hs_size = hidden_states.shape[2]
+            hidden_states = hidden_states.reshape(-1, max_proposal_len + 1,
+                                                  hs_size)
+            accepted_index = accepted_token_ids + 1  # Convert -1 to 0
+            accepted_index = accepted_index.count_nonzero(dim=1).add_(-1)
+            index = accepted_index[:, None, None].expand(-1, 1, hs_size)
+            hidden_states = hidden_states.gather(1, index).squeeze(1)  # b x d
+            # Store hidden states from target model for subsequent decode step
+            self.previous_hidden_states = HiddenStates(seq_group_metadata_list,
+                                                       hidden_states)
+
+        return best_candidate_index, accepted_token_ids, logprobs
+
 
     @nvtx_range("spec_decode_worker._verify_tokens")
     def _verify_tokens(
@@ -633,6 +776,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
 
         maybe_rejsample_metrics = (
             self._metrics.maybe_collect_rejsample_metrics(k))
+        # print(f"{maybe_rejsample_metrics}")
         if maybe_rejsample_metrics is not None:
             sampler_output_list[
                 0].spec_decode_worker_metrics = maybe_rejsample_metrics

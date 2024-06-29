@@ -48,6 +48,17 @@ class EagleConfig(PretrainedConfig):
         if num_key_value_heads is None:
             num_key_value_heads = num_attention_heads
 
+        self.tree_choices = [[0], [1], [2], [3], [0, 0], [0, 1], [0, 2],
+                             [1, 0], [1, 1], [2, 0], [2, 1], [3, 0], [0, 0, 0],
+                             [0, 0, 1], [0, 0, 2], [0, 1, 0], [0, 1, 1],
+                             [0, 2, 0], [0, 2, 1], [1, 0, 0], [0, 0, 0, 0],
+                             [0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 0, 0],
+                             [0, 0, 0, 0, 1]]
+
+        # self.tree_choices = [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0, 0]] # 5st depth we choose top 1
+        
+        self.topk = topk
+
         self.num_key_value_heads = num_key_value_heads
         self.hidden_act = hidden_act
         self.initializer_range = initializer_range

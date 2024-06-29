@@ -715,8 +715,12 @@ class LLMEngine:
                 scheduled_seq_groups, output_by_sequence_group,
                 seq_group_metadata_list):
             seq_group = scheduled_seq_group.seq_group
-            seq_group.update_num_computed_tokens(
-                scheduled_seq_group.token_chunk_size)
+            # FIXME: (chenzhengda) Hack for spec decoding
+            # seq_group.update_num_computed_tokens(
+            #     scheduled_seq_group.token_chunk_size)
+            if scheduled_seq_group.token_chunk_size != 1:
+                seq_group.update_num_computed_tokens(
+                    scheduled_seq_group.token_chunk_size)
             if self.model_config.embedding_mode:
                 self._process_sequence_group_outputs(seq_group, outputs)
                 continue
@@ -724,6 +728,16 @@ class LLMEngine:
             self.output_processor.process_prompt_logprob(seq_group, outputs)
             if seq_group_meta.do_sample:
                 self.output_processor.process_outputs(seq_group, outputs)
+
+            # FIXME: (chenzhengda) Hack for spec decoding
+            if scheduled_seq_group.token_chunk_size == 1:
+                samples = [
+                    outputs[step].samples[0] for step in range(len(outputs))
+                ]
+                valid_samples = [
+                    sample for sample in samples if sample.output_token != -1
+                ]
+                seq_group.update_num_computed_tokens(len(valid_samples))
 
         # Free the finished sequence groups.
         self.scheduler.free_finished_seq_groups()
@@ -800,7 +814,12 @@ class LLMEngine:
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
-                num_lookahead_slots=scheduler_outputs.num_lookahead_slots,
+                num_speculative_candidates=self.speculative_config.
+                num_speculative_candidates
+                if scheduler_outputs.num_lookahead_slots > 0 else 0,
+                num_speculative_tokens=self.speculative_config.
+                num_speculative_tokens
+                if scheduler_outputs.num_lookahead_slots > 0 else 0,
                 running_queue_size=scheduler_outputs.running_queue_size,
             )
             output = self.model_executor.execute_model(

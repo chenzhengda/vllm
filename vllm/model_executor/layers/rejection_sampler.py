@@ -93,6 +93,86 @@ class RejectionSampler(SpecDecodeBaseSampler, nn.Module):
 
         return output_token_ids
 
+    def forward_for_naive_eagle(
+        self,
+        target_token_ids: torch.Tensor,
+        bonus_token_ids: torch.Tensor,
+        draft_token_ids: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Sample token ids using rejection sampling. This accepts or rejects
+        tokens proposed by the draft model using the probability of each token
+        according to the draft and target models.
+
+        In the worst case where all draft tokens are rejected, it is guaranteed
+        one correct token will be emitted.
+
+        In the case where all draft tokens are accepted, a bonus token will be
+        accepted as its cheap to have the target model score this speculative
+        sequence.
+
+        Args:
+            target_probs: The probability distribution over token ids given
+                context according to the target model.
+            shape = [batch_size, num_candidates, num_speculative_tokens, vocab_size]
+
+            bonus_token_ids: The "bonus" token ids that are accepted if all
+                speculative tokens in a sequence are accepted.
+            shape = [batch_size, num_candidates, num_bonus_tokens]
+
+            draft_probs: The probability distribution over token ids given
+                context according to the draft model.
+            shape = [batch_size, num_candidates, num_speculative_tokens, vocab_size]
+
+            draft_token_ids: The token ids that were sampled from the draft
+                probabilities.
+            shape = [batch_size, num_candidates, num_speculative_tokens]
+
+        Returns:
+            output_token_ids: The token ids sampled via rejection sampling,
+                or -1 if unable to sample a token because the previous token
+                was rejected.
+            shape = [batch_size, num_speculative_tokens + num_bonus_tokens]
+
+            best_candidate_index: The index of the best candidate sequence.
+                shape = [batch_size]
+        """
+        batch_size = target_token_ids.shape[0]
+        num_speculative_tokens = target_token_ids.shape[-1]
+        num_bonus_tokens = bonus_token_ids.shape[-1]
+
+        # Find the tokens that match the maximum logits for each position in the sequence
+        posterior_mask = (target_token_ids == draft_token_ids).int()
+        candidates_accept_length = torch.cumprod(posterior_mask, dim=-1).sum(dim=-1)
+        accept_length = candidates_accept_length.max(dim=1).values
+        best_candidate_index = torch.argmax(candidates_accept_length, dim=-1).to(torch.long)
+
+        # Initialize output_token_ids with -1
+        output_token_ids = torch.full(
+            (batch_size, num_speculative_tokens + num_bonus_tokens),
+            -1,
+            device=draft_token_ids.device,
+            dtype=torch.long
+        )
+
+        for i in range(batch_size):
+            draft_slice = draft_token_ids[
+                i, best_candidate_index[i], :accept_length[i]]
+            target_slice = (torch.cat([target_token_ids, bonus_token_ids],
+                                      dim=-1))[i, best_candidate_index[i],
+                                               accept_length[i]].unsqueeze(0)
+            combined_slice = torch.cat((draft_slice, target_slice), dim=0)
+            padded_output_token_ids = torch.zeros(target_token_ids.shape[-1] +
+                                                  1, device=draft_token_ids.device) - 1
+            length_to_copy = min(combined_slice.size(0),
+                                 target_token_ids.shape[-1] + 1)
+            padded_output_token_ids[:
+                                    length_to_copy] = combined_slice[:
+                                                                     length_to_copy]
+            output_token_ids[i] = padded_output_token_ids
+
+        return output_token_ids, best_candidate_index
+
+
     def _batch_modified_rejection_sampling(
             self,
             target_probs: torch.Tensor,  # [batch_size, k, vocab_size]

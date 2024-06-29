@@ -108,6 +108,8 @@ class XFormersMetadata(AttentionMetadata, PagedAttentionMetadata):
     _cached_prefill_metadata: Optional["XFormersMetadata"] = None
     _cached_decode_metadata: Optional["XFormersMetadata"] = None
 
+    attn_masks: Optional[torch.Tensor] = None
+
     def __post_init__(self):
         # Set during the execution of the first attention op.
         # It is a list because it is needed to set per prompt
@@ -170,7 +172,8 @@ class XFormersMetadata(AttentionMetadata, PagedAttentionMetadata):
             max_decode_seq_len=self.max_decode_seq_len,
             query_start_loc=None,
             seq_start_loc=None,
-            context_lens_tensor=None,
+            # context_lens_tensor=None,
+            context_lens_tensor=self.context_lens_tensor[self.num_prefills:] if self.context_lens_tensor is not None else None,
             block_tables=self.block_tables[self.num_prefills:],
             use_cuda_graph=self.use_cuda_graph,
         )
@@ -326,12 +329,14 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 value_cache,
                 decode_meta.block_tables,
                 decode_meta.seq_lens_tensor,
+                decode_meta.context_lens_tensor,
                 decode_meta.max_decode_seq_len,
                 self.kv_cache_dtype,
                 self.num_kv_heads,
                 self.scale,
                 self.alibi_slopes,
                 kv_scale,
+                decode_meta.attn_masks,
             )
 
         # Reshape the output tensor.

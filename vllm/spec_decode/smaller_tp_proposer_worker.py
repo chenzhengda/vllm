@@ -49,7 +49,6 @@ class SmallerTpProposerWorker(ProposerWorkerBase):
         """
         self._worker = worker
         self._draft_ranks = draft_ranks
-
         # init during init_device
         self._is_dummy = False
         self._tp_group = None

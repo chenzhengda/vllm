@@ -16,11 +16,13 @@ class SpeculativeProposals:
     # Speculative proposal tokens.
     proposal_token_ids: torch.Tensor
 
-    # Probabilities of the proposal tokens according to the proposer.
-    proposal_probs: torch.Tensor
-
     # The valid length of each proposal; can be zero.
     proposal_lens: torch.Tensor
+
+    # Probabilities of the proposal tokens according to the proposer.
+    proposal_probs: Optional[torch.Tensor] = None
+
+    tree_candidates: Optional[torch.Tensor]=None
 
     def __repr__(self):
         return (f"SpeculativeProposals("
@@ -35,17 +37,17 @@ class SpeculativeScores:
     according to the scoring model.
     """
 
+    # Token ids sampled from the scoring model. Used for speculative bonus
+    # tokens and also non-speculative normal decoding.
+    token_ids: torch.Tensor
+
     # Probabilities of the speculative tokens according to the scoring model.
-    probs: torch.Tensor
+    probs: Optional[torch.Tensor] = None
 
     # Log-probabilities of the speculative tokens according to the scoring
     # model. These values can be used to generate Logprob objects that are
     # returned to the user.
-    logprobs: torch.Tensor
-
-    # Token ids sampled from the scoring model. Used for speculative bonus
-    # tokens and also non-speculative normal decoding.
-    token_ids: torch.Tensor
+    logprobs: Optional[torch.Tensor] = None
 
     # Optional last hidden states from the scoring model.
     hidden_states: Optional[torch.Tensor] = None

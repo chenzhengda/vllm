@@ -48,7 +48,8 @@ class Top1Proposer(SpeculativeProposer):
         Sequences which would exceed the max model length are skipped during
         speculation.
         """
-        proposal_len = execute_model_req.num_lookahead_slots
+        # proposal_len = execute_model_req.num_lookahead_slots
+        proposal_len = execute_model_req.num_speculative_tokens
         seq_group_metadata_list = execute_model_req.seq_group_metadata_list
 
         # Split speculative- and non-speculative- sequences.
@@ -70,7 +71,8 @@ class Top1Proposer(SpeculativeProposer):
                 hidden_states.prune(nonzero_proposal_len_seqs)
             nonzero_execute_model_req = ExecuteModelRequest(
                 seq_group_metadata_list=nonzero_proposal_len_seqs,
-                num_lookahead_slots=proposal_len,
+                num_speculative_tokens=proposal_len,
+                # num_lookahead_slots=proposal_len,
                 previous_hidden_states=hidden_states,
             )
             maybe_sampler_output, transposed = self._worker.sampler_output(
@@ -253,6 +255,235 @@ class Top1Proposer(SpeculativeProposer):
         entire_proposal_probs = proposal_probs.new_zeros(
             batch_size,
             *proposal_probs.shape[1:],
+        )
+        entire_proposal_probs[nonzero_proposal_len_indices] = proposal_probs
+
+        proposal_tokens, proposal_probs = (
+            entire_proposal_tokens,
+            entire_proposal_probs,
+        )
+
+        proposal_lens_tensor = torch.zeros(batch_size,
+                                           dtype=torch.long,
+                                           device=self._device)
+        proposal_lens_tensor[nonzero_proposal_len_indices] = proposal_len
+
+        return proposal_tokens, proposal_probs, proposal_lens_tensor
+
+class EagleTreeProposer(Top1Proposer):
+    """Helper class which separates out sequences which would exceed the max
+    model length when speculated upon.
+
+    This allows combinations of models such as JackFram/llama-68m draft with
+    meta-llama/Llama2-13b-chat-hf, as llama-68m has max_position_embeddings of
+    2048 while Llama2-13b has max_position_embeddings of 4096.
+
+    We treat the sequences which exceed the proposal draft model length as
+    "non-spec sequences". Essentially they skip the draft model and go through
+    normal decoding in the target model.
+
+    Currently, only proposal_lens of 0 and k are supported, where k is a global
+    batch proposal length. In the future vLLM should support per-sequence
+    proposal lengths.
+    """
+
+    def __init__(
+        self,
+        worker: ProposerWorkerBase,
+        device: str,
+        vocab_size: int,
+        max_proposal_len: Optional[int] = None,
+    ):
+        self._worker = worker
+        self._device = device
+        self.max_proposal_len = max_proposal_len
+        self._vocab_size = vocab_size
+
+    @nvtx_range("proposer_worker.get_spec_proposals")
+    def get_spec_proposals(
+        self,
+        execute_model_req: ExecuteModelRequest,
+    ) -> SpeculativeProposals:
+        """Get speculative proposals given the input batch.
+
+        Sequences which would exceed the max model length are skipped during
+        speculation.
+        """
+        proposal_len = execute_model_req.num_speculative_tokens
+        proposal_num = execute_model_req.num_speculative_candidates
+        seq_group_metadata_list = execute_model_req.seq_group_metadata_list
+
+        # Split speculative- and non-speculative- sequences.
+        (
+            proposal_lens,
+            nonzero_proposal_len_seqs,
+            nonzero_proposal_len_indices,
+        ) = self._split_by_proposal_len(seq_group_metadata_list, proposal_len)
+
+        if nonzero_proposal_len_seqs:
+            # Speculate tokens using the draft worker for the speculative
+            # sequences.
+            # If sampler_transposed is true, then maybe_sampler_output's
+            # token_ids is like [batch] format in proposal_len size list,
+            # while if it is false, the format would be [proposal_len]
+            # in batch size list
+            hidden_states = execute_model_req.previous_hidden_states
+            if hidden_states is not None:
+                hidden_states.prune(nonzero_proposal_len_seqs)
+            nonzero_execute_model_req = ExecuteModelRequest(
+                seq_group_metadata_list=nonzero_proposal_len_seqs,
+                num_lookahead_slots=proposal_len,
+                previous_hidden_states=hidden_states,
+            )
+            maybe_sampler_output, transposed, tree_candidates = self._worker.sampler_output(
+                execute_model_req=nonzero_execute_model_req,
+                sample_len=proposal_len,
+                sample_num=proposal_num,
+            )
+            (
+                proposal_lens,
+                maybe_sampler_output,
+                nonzero_proposal_len_indices,
+            ) = self._remove_no_proposal_seqs(proposal_lens,
+                                              maybe_sampler_output,
+                                              nonzero_proposal_len_indices,
+                                              transposed)
+        else:
+            # If no sequences can be speculated, set sampler output to None.
+            maybe_sampler_output = None
+            transposed = False
+
+        # Combine speculative- and non-speculative sequences into the same
+        # representation.
+        proposal_tokens, proposal_probs, proposal_lens = self._merge_outputs(
+            batch_size=len(seq_group_metadata_list),
+            proposal_len=proposal_len,
+            maybe_sampler_output=maybe_sampler_output,
+            proposal_lens=proposal_lens,
+            nonzero_proposal_len_indices=nonzero_proposal_len_indices,
+            sampler_transposed=transposed,
+        )
+
+        proposals = SpeculativeProposals(
+            proposal_token_ids=proposal_tokens,
+            proposal_probs=proposal_probs,
+            proposal_lens=proposal_lens,
+            tree_candidates=tree_candidates
+        )
+
+        return proposals
+
+    def sampler_output_to_torch_for_eagle_tree_proposal(
+        self, sampler_output_list: List[SamplerOutput], sampler_transposed: bool
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Utility function which converts a list of SamplerOutput to tensors.
+
+            sampler_transposed here is used as the indicator for whether
+            we need do additional tensor transpose logic here.
+
+            Returns:
+                sampled_token_ids: torch.Tensor
+                    shape: [batch_size, len(sampler_output_list)]
+
+                sampled_token_probs: torch.Tensor
+                    shape: [batch_size, len(sampler_output_list), vocab_size]
+            """
+
+        # Stacking probabilities, shape: [num_sequences, num_tokens, batch_size, vocab_size]
+        sampled_token_probs = torch.stack([
+            torch.stack([
+                sampler_output.sampled_token_probs for sampler_output in sequence
+            ],
+                        dim=0) for sequence in sampler_output_list
+        ],
+                                        dim=0)
+
+        # Transposing if needed
+        if sampler_transposed:
+            sampled_token_probs = sampled_token_probs.permute(2, 0, 1, 3)
+
+        # Stacking log probabilities, shape: [num_sequences, num_tokens, batch_size, vocab_size]
+        sampled_token_logprobs = torch.stack([
+            torch.stack([sampler_output.logprobs for sampler_output in sequence],
+                        dim=0) for sequence in sampler_output_list
+        ],
+                                            dim=0)
+
+        # Transposing if needed
+        if sampler_transposed:
+            sampled_token_logprobs = sampled_token_logprobs.permute(2, 0, 1, 3)
+
+        # Stacking token IDs, shape: [num_sequences, num_tokens, batch_size]
+        sampled_token_ids = torch.stack([
+            torch.stack([
+                sampler_output.sampled_token_ids.flatten()
+                for sampler_output in sequence
+            ],
+                        dim=0) for sequence in sampler_output_list
+        ],
+                                        dim=0)
+
+        # Transposing if needed
+        if sampler_transposed:
+            sampled_token_ids = sampled_token_ids.permute(2, 0, 1)
+
+        return sampled_token_ids, sampled_token_probs, sampled_token_logprobs
+
+    def _merge_outputs(
+        self,
+        batch_size: int,
+        proposal_len: int,
+        maybe_sampler_output: Optional[SamplerOutput],
+        proposal_lens: List[int],
+        nonzero_proposal_len_indices: List[int],
+        sampler_transposed: bool,
+    ) -> Tuple[torch.Tensor, torch.tensor, torch.Tensor]:
+        """After speculations are produced, merge the speculation results with
+        the skipped sequences.
+        """
+        if maybe_sampler_output is None:
+            # If no speculative tokens, the sampler output will be None.
+            # In this case we return empty proposals.
+            proposal_tokens = torch.full(
+                size=(
+                    batch_size,
+                    proposal_len,
+                ),
+                fill_value=-1,
+                dtype=torch.long,
+                device=self._device,
+            )
+            proposal_probs = torch.zeros(
+                batch_size,
+                proposal_len,
+                self._vocab_size,
+                dtype=torch.float32,
+                device=self._device,
+            )
+            proposal_lens_tensor = torch.zeros(len(proposal_lens),
+                                               dtype=torch.long,
+                                               device=self._device)
+            return proposal_tokens, proposal_probs, proposal_lens_tensor
+
+        sampler_output = maybe_sampler_output
+        proposal_tokens, proposal_probs, _ = self.sampler_output_to_torch_for_eagle_tree_proposal(
+            sampler_output, sampler_transposed)
+
+        # Now, reformat the output GPU tensors such that each sequence has
+        # a proposal. the proposal can be empty, e.g. [-1, -1, -1]
+
+        entire_proposal_tokens = torch.full(
+            size=(batch_size, *proposal_tokens.shape[1:]),
+            fill_value=-1,
+            dtype=torch.long,
+            device=self._device,
+        )
+        entire_proposal_tokens[nonzero_proposal_len_indices] = proposal_tokens
+        entire_proposal_probs = torch.zeros(
+            batch_size,
+            *proposal_probs.shape[1:],
+            dtype=torch.float32,
+            device=self._device,
         )
         entire_proposal_probs[nonzero_proposal_len_indices] = proposal_probs
 

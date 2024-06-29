@@ -21,6 +21,7 @@ except ImportError:
     BatchPrefillWithPagedKVCacheWrapper = None
     FLASHINFER_WORKSPACE_BUFFER_SIZE = 0
 
+from tests.lora.test_punica import R
 from vllm.attention import AttentionMetadata, get_attn_backend
 from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
                          ModelConfig, ParallelConfig, SchedulerConfig,
@@ -396,7 +397,9 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
                     # get_num_computed_tokens is incorrect for spec decoding.
                     # So, we should have a special logic here.
                     # TODO(sang): Fix it.
-                    context_len = seq_data.get_len() - 1
+                    # context_len = seq_data.get_len() - 1
+                    # FIXME: (chenzhengda) I think no need a special logic for draft right now
+                    context_len = seq_data.get_num_computed_tokens()
 
                 seq_len = min(
                     seq_data.get_len(),
@@ -406,7 +409,9 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
                 else:
                     # Optimization. get_token_ids requires the entire copy of
                     # tokens.
-                    tokens = [seq_data.get_last_token_id()]
+                    # FIXME: (chenzhengda): May break prefix cache here
+                    # tokens = [seq_data.get_last_token_id()]
+                    tokens = seq_data.get_uncomputed_token_ids()
 
                 # Prefix cache was hit.
                 # Prefix is not supported with sliding_window
@@ -492,7 +497,7 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
                     decode_only = False
                     prefill_seq_lens.append(seq_len)
                 else:
-                    assert query_len == 1, (
+                    assert query_len >= 1, (
                         "seq_len: {}, context_len: {}, query_len: {}".format(
                             seq_len, context_len, query_len))
                     num_decode_tokens += query_len
@@ -1144,6 +1149,11 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
             **multi_modal_kwargs,
         )
 
+        # FIXME: (chenzhengda): Hard code for eagle verify
+        if (model_input.attn_metadata.num_decode_tokens > 0
+                                and model_input.attn_metadata.max_query_len > 1):
+            return hidden_states
+
         # Compute the logits.
         logits = self.model.compute_logits(hidden_states,
                                            model_input.sampling_metadata)
@@ -1465,7 +1475,9 @@ class EagleModelRunner(GPUModelRunnerBase[ModelInputForEagle]):
                     # get_num_computed_tokens is incorrect for spec decoding.
                     # So, we should have a special logic here.
                     # TODO(sang): Fix it.
-                    context_len = seq_data.get_len() - 1
+                    # context_len = seq_data.get_len() - 1
+                    # FIXME: (chenzhengda) I think no need a special logic for draft right now
+                    context_len = seq_data.get_num_computed_tokens()
 
                 seq_len = min(
                     seq_data.get_len(),
@@ -1475,7 +1487,9 @@ class EagleModelRunner(GPUModelRunnerBase[ModelInputForEagle]):
                 else:
                     # Optimization. get_token_ids requires the entire copy of
                     # tokens.
-                    tokens = [seq_data.get_last_token_id()]
+                    # FIXME: (chenzhengda): May break prefix cache here
+                    # tokens = [seq_data.get_last_token_id()]
+                    tokens = seq_data.get_uncomputed_token_ids()
 
                 # Prefix cache was hit.
                 # Prefix is not supported with sliding_window
@@ -1561,7 +1575,7 @@ class EagleModelRunner(GPUModelRunnerBase[ModelInputForEagle]):
                     decode_only = False
                     prefill_seq_lens.append(seq_len)
                 else:
-                    assert query_len == 1, (
+                    assert query_len >= 1, (
                         "seq_len: {}, context_len: {}, query_len: {}".format(
                             seq_len, context_len, query_len))
                     num_decode_tokens += query_len
@@ -1916,6 +1930,12 @@ class EagleModelRunner(GPUModelRunnerBase[ModelInputForEagle]):
             **multi_modal_kwargs,
         )
 
+        # FIXME: (chenzhengda) hard core for top1 and tree dispatch
+        if (self.model_config.hf_config.architectures[0]
+        == "EagleModel" and self.model.config.tree_choices != [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0, 0]]
+        ) or (model_input.attn_metadata.num_decode_tokens > 0
+                                and model_input.attn_metadata.max_query_len > 1):
+            return hidden_states
         # Compute the logits.
         logits = self.model.compute_logits(hidden_states,
                                            model_input.sampling_metadata)

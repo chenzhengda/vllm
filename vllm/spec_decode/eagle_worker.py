@@ -2,12 +2,13 @@ import copy
 import weakref
 from typing import List, Tuple
 
+from altair import Optional
 import torch
 
 from vllm.sequence import (ExecuteModelRequest, SamplerOutput,
                            SequenceGroupMetadata)
 from vllm.spec_decode.interfaces import SpeculativeProposals
-from vllm.spec_decode.top1_proposer import Top1Proposer
+from vllm.spec_decode.top1_proposer import Top1Proposer, EagleTreeProposer
 from vllm.spec_decode.multi_step_worker import MultiStepWorker
 
 
@@ -31,18 +32,30 @@ class EagleWorker(MultiStepWorker):
     def init_device(self):
         super().init_device()
 
-        self._proposer = Top1Proposer(
-            weakref.proxy(self),  # type: ignore[arg-type]
-            self.device,
-            self.vocab_size,
-            max_proposal_len=self.max_model_len,
-        )
+    def load_model(self):
+        self.model_runner.load_model()
+
+        if (self.model_runner.model.config.tree_choices == [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0, 0]]):
+            self._proposer = Top1Proposer(
+                weakref.proxy(self),  # type: ignore[arg-type]
+                self.device,
+                self.vocab_size,
+                max_proposal_len=self.max_model_len,
+            )
+        else:
+            self._proposer = EagleTreeProposer(
+                weakref.proxy(self),  # type: ignore[arg-type]
+                self.device,
+                self.vocab_size,
+                max_proposal_len=self.max_model_len,
+            )
 
     @torch.inference_mode()
     def sampler_output(
         self,
         execute_model_req: ExecuteModelRequest,
         sample_len: int,
+        sample_num: Optional[int] = 1,
     ) -> Tuple[List[SamplerOutput], bool]:
         """Run the model forward pass sample_len times. Returns the list of
         sampler output, one per model forward pass, along with indicator of
@@ -52,29 +65,47 @@ class EagleWorker(MultiStepWorker):
         """
         self._raise_if_unsupported(execute_model_req)
 
-        # Shallow copy input data so modifications (such as appending tokens)
-        # do not cause side-effects.
-        copied_seq_group_metadata_list = self._shallow_copy_inputs(
-            execute_model_req.seq_group_metadata_list)
-        copied_execute_model_req = execute_model_req.clone(
-            copied_seq_group_metadata_list)
+        if (self.model_runner.model.config.tree_choices == [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0, 0]]):
+            # Shallow copy input data so modifications (such as appending tokens)
+            # do not cause side-effects.
+            copied_seq_group_metadata_list = self._shallow_copy_inputs(
+                execute_model_req.seq_group_metadata_list)
+            copied_execute_model_req = execute_model_req.clone(
+                copied_seq_group_metadata_list)
 
-        # Assert enough KV space for sample_len tokens per sequence.
-        self._assert_enough_kv_space(execute_model_req.seq_group_metadata_list,
-                                     sample_len)
+            # Assert enough KV space for sample_len tokens per sequence.
+            self._assert_enough_kv_space(execute_model_req.seq_group_metadata_list,
+                                        sample_len)
 
-        # Run model sample_len times.
-        model_outputs: List[SamplerOutput] = []
-        for _ in range(sample_len):
+            # Run model sample_len times.
+            model_outputs: List[SamplerOutput] = []
+            for _ in range(sample_len):
+                model_output = super().execute_model(
+                    execute_model_req=copied_execute_model_req)
+                assert (len(model_output) == 1
+                        ), "composing multistep workers not supported"
+                model_output = model_output[0]
+
+                self._append_new_tokens(model_output,
+                                        copied_seq_group_metadata_list)
+                model_outputs.append(model_output)
+                execute_model_req.previous_hidden_states.hidden_states = model_output.hidden_states
+
+            return model_outputs, True
+        else:
+            # Assert enough KV space for sample_len tokens per sequence.
+            self._assert_enough_kv_space(execute_model_req.seq_group_metadata_list,
+                                        sample_num * sample_len)
+
+            copied_seq_group_metadata_list = self._shallow_copy_inputs(
+                execute_model_req.seq_group_metadata_list)
+            copied_execute_model_req = execute_model_req.clone(
+                copied_seq_group_metadata_list)
+
             model_output = super().execute_model(
                 execute_model_req=copied_execute_model_req)
-            assert (len(model_output) == 1
-                    ), "composing multistep workers not supported"
-            model_output = model_output[0]
 
-            self._append_new_tokens(model_output,
-                                    copied_seq_group_metadata_list)
-            model_outputs.append(model_output)
-            execute_model_req.previous_hidden_states.hidden_states = model_output.hidden_states
-
-        return model_outputs, True
+            # Get sample_num * sample_len Outputs.
+            model_outputs_topK = model_output[0][0]
+            tree_candidates = model_output[0][1]
+            return model_outputs_topK, False, tree_candidates

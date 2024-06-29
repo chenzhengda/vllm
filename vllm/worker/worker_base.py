@@ -264,6 +264,71 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         return [output]
 
 
+    def defragment_accepted_kv_blocks(self,
+                                      execute_model_req: Optional[ExecuteModelRequest] = None,
+                                      best_candidate_index: Optional[torch.Tensor] = None,
+                                      accepted_token_ids: Optional[torch.Tensor] = None):
+        """Executes at least one model step on the given sequences, unless no
+        sequences are provided."""
+        if self.is_driver_worker:
+            if execute_model_req is None:
+                if self.do_metadata_broadcast:
+                    # This signals that there's no more requests to process for
+                    # now. All workers are running infinite loop with
+                    # broadcast_tensor_dict, and it stops the loop when the
+                    # driver broadcasts an empty input. Send an empty input to
+                    # notify all other workers to stop their execution loop.
+                    broadcast_tensor_dict({}, src=0)
+                return None
+
+            worker_input: WorkerInput = self.prepare_worker_input(
+                execute_model_req=execute_model_req)
+            if execute_model_req.previous_hidden_states is not None:
+                model_input: ModelRunnerInputBase = (
+                    self.model_runner.prepare_model_input(
+                        execute_model_req.seq_group_metadata_list, 
+                        execute_model_req.previous_hidden_states.hidden_states))
+            else:
+                model_input: ModelRunnerInputBase = (
+                    self.model_runner.prepare_model_input(
+                        execute_model_req.seq_group_metadata_list))
+            
+            if self.do_metadata_broadcast:
+                broadcast_data = worker_input.as_broadcastable_tensor_dict()
+                broadcast_data.update(
+                    model_input.as_broadcastable_tensor_dict())
+    
+                tensor_dict = {
+                    "best_candidate_index": best_candidate_index,
+                    "accepted_token_ids": accepted_token_ids
+                }
+                
+                broadcast_data.update(tensor_dict)            
+    
+                broadcast_tensor_dict(broadcast_data, src=0)
+        else:
+            assert self.do_metadata_broadcast
+            broadcast_data = broadcast_tensor_dict(src=0)
+            if not broadcast_data:
+                return None
+
+            best_candidate_index = broadcast_data.pop("best_candidate_index")
+            accepted_token_ids = broadcast_data.pop("accepted_token_ids")
+
+            worker_input = WorkerInput.from_broadcasted_tensor_dict(
+                broadcast_data)
+            model_input = (
+                self.model_runner.
+                make_model_input_from_broadcasted_tensor_dict(broadcast_data))
+
+        # If there is no input, we don't need to execute the model.
+        if worker_input.num_seq_groups == 0:
+            return []
+
+        output = self.model_runner.model.defragment_accepted_kv_blocks(model_input.attn_metadata, best_candidate_index, accepted_token_ids, self.kv_cache)
+        # Worker only supports single-step execution. Wrap the output in a
+        # list to conform to interface.
+        # return [output]
 class WorkerWrapperBase:
     """
     The whole point of this class is to lazily initialize the worker.
