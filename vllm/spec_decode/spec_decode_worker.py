@@ -506,7 +506,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
                 execute_model_req.seq_group_metadata_list, proposal_scores,
                 proposals, execute_model_req.num_speculative_tokens)
 
-        print(f"{accepted_token_ids=}")
+        # print(f"{accepted_token_ids=}")
         return self._create_output_sampler_list(
             execute_model_req.seq_group_metadata_list,
             accepted_token_ids,

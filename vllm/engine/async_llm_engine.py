@@ -230,7 +230,12 @@ class _AsyncLLMEngine(LLMEngine):
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
-                num_lookahead_slots=scheduler_outputs.num_lookahead_slots,
+                num_speculative_candidates=self.speculative_config.
+                num_speculative_candidates
+                if scheduler_outputs.num_lookahead_slots > 0 else 0,
+                num_speculative_tokens=self.speculative_config.
+                num_speculative_tokens
+                if scheduler_outputs.num_lookahead_slots > 0 else 0,
                 running_queue_size=scheduler_outputs.running_queue_size,
             )
             output = await self.model_executor.execute_model_async(

@@ -545,11 +545,6 @@ class EngineArgs:
             help='The number of speculative tokens to sample from '
             'the draft model in speculative decoding.')
         parser.add_argument(
-            '--num-speculative-slots',
-            type=int,
-            default=EngineArgs.num_speculative_slots,
-            help='')
-        parser.add_argument(
             '--speculative-draft-tensor-parallel-size',
             '-spec-draft-tp',
             type=int,

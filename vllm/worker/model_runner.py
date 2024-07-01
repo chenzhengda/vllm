@@ -1823,6 +1823,11 @@ class EagleModelRunner(GPUModelRunnerBase[ModelInputForEagle]):
             for k, v in multi_modal_kwargs_list.items()
         }
 
+        if input_hidden_states.shape[0] != input_tokens_tensor.shape[0]:
+            target_shape = (input_tokens_tensor.shape[0], input_hidden_states.shape[1])
+            pad_size = (0, 0, 0, target_shape[0] - input_hidden_states.shape[0])
+            input_hidden_states = torch.nn.functional.pad(input_hidden_states, pad_size)
+
         return self._model_input_cls(
             input_tokens=input_tokens_tensor,
             input_positions=input_positions_tensor,

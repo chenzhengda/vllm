@@ -55,7 +55,7 @@ class EagleConfig(PretrainedConfig):
                              [0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 0, 0],
                              [0, 0, 0, 0, 1]]
 
-        # self.tree_choices = [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0, 0]] # 5st depth we choose top 1
+        self.tree_choices = [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0, 0]] # 5st depth we choose top 1
         
         self.topk = topk
 
