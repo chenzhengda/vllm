@@ -15,7 +15,6 @@ from typing import Dict, Optional
 
 from pydantic import BaseModel, ConfigDict, ValidationInfo, model_validator
 
-
 class KVCacheQuantSchema(BaseModel):
     dtype: str
     # Each key is a TP rank. Each value is a dictionary mapping a TP rank's

@@ -54,6 +54,7 @@ from .interfaces import SupportsLoRA
 from vllm.distributed import (broadcast_tensor_dict, get_pp_group,
                               tensor_model_parallel_all_gather,
                               tensor_model_parallel_all_reduce)
+from vllm import _custom_ops as ops
 class LlamaMLP(nn.Module):
 
     def __init__(
@@ -445,8 +446,8 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA):
                              [0, 2, 0], [0, 2, 1], [1, 0, 0], [0, 0, 0, 0],
                              [0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 0, 0],
                              [0, 0, 0, 0, 1]]
-        self.tree_choices = [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0],
-                             [0, 0, 0, 0, 0]]  # # 5st depth we choose top 1
+
+        self.tree_choices = [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0, 0]]  # # 5st depth we choose top 1
         self.tree_topk = 10
         self.target_tree_buffer = self.generate_target_tree_buffers(
             self.tree_choices)
@@ -843,14 +844,38 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA):
         value_cache = value_cache.view(num_blocks, num_kv_heads, head_size, -1)
         return key_cache, value_cache
 
+    def split_kv_cache_v2(
+        self,
+        kv_caches: List[torch.Tensor],
+        num_kv_heads: int,
+        head_size: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        x = 16 // kv_caches[0].element_size()
+        num_blocks = kv_caches[0].shape[1]
+        # key_caches: List[torch.Tensor]
+        # value_caches: List[torch.Tensor]
+        
+        # for layer_id in range(len(kv_caches)):
+        #     kv_cache = kv_caches[layer_id]
+        #     key_cache = kv_cache[0]
+        #     key_cache = key_cache.view(num_blocks, num_kv_heads, head_size // x,
+        #                                 -1, x)
+        #     value_cache = kv_cache[1]
+        #     value_cache = value_cache.view(num_blocks, num_kv_heads, head_size, -1)
+        #     key_caches.append(key_cache)
+        #     value_caches.append(value_cache)
+
+        key_caches = [kv_cache[0].view(num_blocks, num_kv_heads, head_size // x, -1, x) for kv_cache in kv_caches]
+        value_caches = [kv_cache[1].view(num_blocks, num_kv_heads, head_size, -1) for kv_cache in kv_caches]
+
+        return key_caches, value_caches
+
     def defragment_accepted_kv_blocks(
             self,
             attn_metadata: AttentionMetadata,
             best_candidate_index: torch.Tensor,
             accepted_token_ids: torch.Tensor,
             kv_caches: List[torch.Tensor]):
-        pass
-
         slot_mapping: List[int] = []
         src_slot_mapping: List[int] = []
         dst_slot_mapping: List[int] = []    
@@ -873,28 +898,64 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA):
                     src_slot_mapping.append(slot_mapping[src_index])
                     dst_slot_mapping.append(slot_mapping[dst_index])
 
-        for layer_id in range(len(self.model.layers)):
-            for i, src_slot in enumerate(src_slot_mapping):
-                key_cache, value_cache = self.split_kv_cache(
-                    kv_caches[layer_id],
-                    self.model.layers[0].self_attn.num_kv_heads,
-                    self.model.layers[0].self_attn.head_dim)
-                src_block_number = int(
-                    src_slot_mapping[i] //
-                                self.block_size)
-                src_block_offset = src_slot_mapping[
-                    i] % self.block_size
-                dst_block_number = int(
-                    dst_slot_mapping[i] //
-                                self.block_size)
-                dst_block_offset = dst_slot_mapping[
-                    i] % self.block_size
+        def ref_custom_copy_kv_caches(
+            key_caches: List[torch.Tensor],  # List of [num_blocks, block_size, num_heads, head_size]
+            value_caches: List[torch.Tensor], # List of [num_blocks, block_size, num_heads, head_size]
+            src_slot_mapping: torch.Tensor, # [num_tokens]
+            dst_slot_mapping: torch.Tensor,  # [num_tokens]
+        ):
+            block_size = value_caches[0].shape[-1]
+            assert src_slot_mapping.numel() == dst_slot_mapping.numel()
+            for i in range(src_slot_mapping.numel()):
+                src_block_number = int(src_slot_mapping[i] // block_size)
+                src_block_offset = src_slot_mapping[i] % block_size
+                dst_block_number = int(dst_slot_mapping[i] // block_size)
+                dst_block_offset = dst_slot_mapping[i] % block_size
+                for layer_id in range(len(key_caches)):
+                    key_cache = key_caches[layer_id]
+                    value_cache = value_caches[layer_id]
 
-                key_cache[dst_block_number, :, :,
-                            dst_block_offset, :] = key_cache[
-                                src_block_number, :, :,
-                                src_block_offset, :]
-                value_cache[dst_block_number, :, :,
-                            dst_block_offset] = value_cache[
-                                src_block_number, :, :,
-                                src_block_offset]
+                    key_cache[dst_block_number, :, :, dst_block_offset, :] = key_cache[
+                        src_block_number, :, :, src_block_offset, :
+                    ]
+                    value_cache[dst_block_number, :, :, dst_block_offset] = value_cache[
+                        src_block_number, :, :, src_block_offset
+                    ]
+
+        if(len(src_slot_mapping) > 0): 
+            src_slot_mapping = torch.tensor(src_slot_mapping, dtype=torch.long).to(best_candidate_index.device)
+            dst_slot_mapping = torch.tensor(dst_slot_mapping, dtype=torch.long).to(best_candidate_index.device)
+            # key_caches, value_caches = self.split_kv_cache_v2(kv_caches, self.model.layers[0].self_attn.num_kv_heads, self.model.layers[0].self_attn.head_dim)
+            x = 16 // kv_caches[0].element_size()
+            num_blocks = kv_caches[0].shape[1]
+            num_kv_heads = self.model.layers[0].self_attn.num_kv_heads
+            head_size = self.model.layers[0].self_attn.head_dim
+            key_caches = [kv_cache[0].view(num_blocks, num_kv_heads, head_size // x, -1, x) for kv_cache in kv_caches]
+            value_caches = [kv_cache[1].view(num_blocks, num_kv_heads, head_size, -1) for kv_cache in kv_caches]
+            ops.custom_copy_kv_caches(key_caches, value_caches, src_slot_mapping, dst_slot_mapping)
+            # ref_custom_copy_kv_caches(key_caches, value_caches, src_slot_mapping, dst_slot_mapping)
+        # for layer_id in range(len(self.model.layers)):
+        #     for i, src_slot in enumerate(src_slot_mapping):
+        #         key_cache, value_cache = self.split_kv_cache(
+        #             kv_caches[layer_id],
+        #             self.model.layers[0].self_attn.num_kv_heads,
+        #             self.model.layers[0].self_attn.head_dim)
+        #         src_block_number = int(
+        #             src_slot_mapping[i] //
+        #                         self.block_size)
+        #         src_block_offset = src_slot_mapping[
+        #             i] % self.block_size
+        #         dst_block_number = int(
+        #             dst_slot_mapping[i] //
+        #                         self.block_size)
+        #         dst_block_offset = dst_slot_mapping[
+        #             i] % self.block_size
+
+        #         key_cache[dst_block_number, :, :,
+        #                     dst_block_offset, :] = key_cache[
+        #                         src_block_number, :, :,
+        #                         src_block_offset, :]
+        #         value_cache[dst_block_number, :, :,
+        #                     dst_block_offset] = value_cache[
+        #                         src_block_number, :, :,
+        #                         src_block_offset]

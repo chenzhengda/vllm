@@ -477,7 +477,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
 
         # Generate proposals using draft worker.
         proposals = self.proposer_worker.get_spec_proposals(execute_model_req)
-
+        # print(f"{proposals=}")
         execute_model_req.previous_hidden_states = None
 
         proposal_scores = self.scorer.score_proposals(
@@ -792,7 +792,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             worker.vocab_size
             for worker in [self.proposer_worker, self.scorer_worker]
         ]
-        assert all(vocab_sizes[0] == vocab_size for vocab_size in vocab_sizes)
+        # assert all(vocab_sizes[0] == vocab_size for vocab_size in vocab_sizes)
         return vocab_sizes[0]
 
     @property

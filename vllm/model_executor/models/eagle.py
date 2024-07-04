@@ -278,6 +278,7 @@ class EagleModel(nn.Module):
             hidden_states = self.get_input_embeddings(input_ids)
         # TODO: Star Code 2
         hidden_states = self.fc(torch.cat((hidden_states, hidden_input), dim=-1))
+
         # hidden_states = self.fc(
         #     torch.cat(
         #         (hidden_states, hidden_input.view(-1, hidden_input.shape[-1])),
@@ -746,7 +747,7 @@ class Eagle(nn.Module):
         batch = len(attn_metadata.block_tables)
         tree_indices = self.tree_buffer['tree_indices'][idx]
         repeat_nums = self.tree_buffer["repeat_nums"][idx]
-        
+
         if idx == 0:
             next_input_ids = topk_index[:, tree_indices].view(-1)
             next_hidden_states = self.repeat_hidden(next_out_hidden.unsqueeze(1), repeat_nums)
@@ -798,7 +799,7 @@ class Eagle(nn.Module):
         logits = tensor_model_parallel_all_gather(logits)
         topk_index = torch.topk(logits, self.config.topk, dim=-1).indices
         probs = torch.softmax(logits, dim=-1)
-        
+
         ss_token.append(topk_index.view(batch, -1, topk_index.shape[-1]))
         ss_prob.append(probs.view(batch, -1, probs.shape[-1]))
 
@@ -937,8 +938,17 @@ class Eagle(nn.Module):
                                 default_weight_loader)
 
         import json
-        index_file_path = self.config.base_model_name_or_path + "/pytorch_model.bin.index.json"
+        import os
+        pytorch_model_bin_index_file_path = self.config.base_model_name_or_path + "/pytorch_model.bin.index.json"
+        safetensors_index_file_path = self.config.base_model_name_or_path + "/model.safetensors.index.json"
         model_directory = self.config.base_model_name_or_path
+
+        if os.path.exists(pytorch_model_bin_index_file_path):
+            index_file_path = pytorch_model_bin_index_file_path
+        elif os.path.exists(safetensors_index_file_path):
+            index_file_path = safetensors_index_file_path
+        else:
+            raise FileNotFoundError("Neither index file exists")
 
         with open(index_file_path, 'r') as f:
             index = json.load(f)
@@ -953,7 +963,11 @@ class Eagle(nn.Module):
 
         if lm_head_file:
             model_path = model_directory + "/" + lm_head_file
-            model_weights = torch.load(model_path)
+            if os.path.exists(pytorch_model_bin_index_file_path):
+                model_weights = torch.load(model_path)
+            elif os.path.exists(safetensors_index_file_path):
+                from safetensors.torch import load_file
+                model_weights = load_file(model_path)
             lm_head_weight = model_weights.get('lm_head.weight')
             if lm_head_weight is None:
                 raise RuntimeError(
@@ -965,6 +979,9 @@ class Eagle(nn.Module):
         weight_loader(params_dict["lm_head.weight"], lm_head_weight)
 
         for name, loaded_weight in weights:
+            # No needs lm head
+            if name == "weight":
+                continue
             if "rotary_emb.inv_freq" in name:
                 continue
             if ("rotary_emb.cos_cached" in name

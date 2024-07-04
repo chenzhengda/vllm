@@ -402,6 +402,11 @@ def convert_fp8(output: torch.Tensor,
                 kv_dtype: str = "fp8") -> None:
     torch.ops._C_cache_ops.convert_fp8(output, input, scale, kv_dtype)
 
+def custom_copy_kv_caches(key_caches: List[torch.Tensor],
+                value_caches: List[torch.Tensor],
+                src_slot_mapping: torch.Tensor,
+                dst_slot_mapping: torch.Tensor) -> None:
+    torch.ops._C_cache_ops.custom_copy_kv_caches(key_caches, value_caches, src_slot_mapping, dst_slot_mapping)
 
 def get_device_attribute(attribute: int, device: int) -> int:
     return torch.ops._C_cuda_utils.get_device_attribute(attribute, device)
