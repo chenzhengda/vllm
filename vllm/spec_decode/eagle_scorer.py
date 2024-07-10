@@ -56,7 +56,7 @@ class EagleScorer(BatchExpansionTop1Scorer):
             logprobs=torch.rand(all_tokens.shape[0],
                                 all_tokens.shape[1],
                                 all_tokens.shape[2],
-                                32000,
+                                self._scorer_worker.model_config.hf_config.vocab_size,
                                 device=all_tokens.device,
                                 dtype=torch.float32),
             hidden_states=all_scorer_hidden_states,

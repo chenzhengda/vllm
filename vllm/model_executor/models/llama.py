@@ -447,7 +447,7 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA):
                              [0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 0, 0],
                              [0, 0, 0, 0, 1]]
 
-        self.tree_choices = [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0, 0]]  # # 5st depth we choose top 1
+        # self.tree_choices = [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0, 0]]  # # 5st depth we choose top 1
         self.tree_topk = 10
         self.target_tree_buffer = self.generate_target_tree_buffers(
             self.tree_choices)

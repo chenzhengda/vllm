@@ -9,6 +9,7 @@ from vllm.executor.multiproc_worker_utils import (ProcessWorkerWrapper,
                                                   ResultHandler, WorkerMonitor)
 from vllm.logger import init_logger
 from vllm.sequence import ExecuteModelRequest, SamplerOutput
+from vllm.triton_utils import maybe_set_triton_cache_manager
 from vllm.utils import (cuda_device_count_stateless,
                         get_distributed_init_method, get_open_port,
                         get_vllm_instance_id, make_async,
@@ -35,6 +36,10 @@ class MultiprocessingGPUExecutor(DistributedGPUExecutor):
 
         # Disable torch async compiling which won't work with daemonic processes
         os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
+
+        # workaround for https://github.com/vllm-project/vllm/issues/6103
+        if world_size > 1:
+            maybe_set_triton_cache_manager()
 
         assert world_size <= cuda_device_count_stateless(), (
             "please set tensor_parallel_size to less than max local gpu count")

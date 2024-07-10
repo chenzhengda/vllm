@@ -814,6 +814,12 @@ class Eagle(nn.Module):
         attn_metadata: AttentionMetadata,
     ) -> list[torch.Tensor]:
         if self.config.tree_choices == [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0, 0]]:
+            def zero_out_input_ids(input_ids, positions):
+                mask = (positions == 0)
+                input_ids[mask] = self.model.embed_tokens.num_embeddings  - 1
+                return input_ids
+            # Eagle Specific: cilp for the first token
+            input_ids = zero_out_input_ids(input_ids, positions)
             out_hidden = self.model(input_hidden_states, input_ids, positions,
                                     kv_caches, attn_metadata)
             return out_hidden
@@ -899,7 +905,7 @@ class Eagle(nn.Module):
                                 sampled_token_probs=cart_candidates_prob[idx_x]
                                 [idx_y][1:],
                                 logprobs=torch.rand(6 - 1,
-                                                    32000,
+                                                    self.model.vocab_size,
                                                     device=cart_candidates.device,
                                                     dtype=torch.float32),
                                 sampled_token_ids=cart_candidates[idx_x][idx_y]

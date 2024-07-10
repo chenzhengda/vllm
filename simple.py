@@ -3,10 +3,10 @@ from vllm.sampling_params import SamplingParams
 import torch
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "2,3"
 
 # tp8  65toks/s vs
-os.environ["VLLM_ATTENTION_BACKEND"] = "XFORMERS"
+# os.environ["VLLM_ATTENTION_BACKEND"] = "XFORMERS"
 llm = LLM(
     model="/data/jieni/workspace/code/inference-toolboxes/hf_experimanets/Llama-2-7b-chat-hf",
     # model="/data/jieni/workspace/models/meta-llama/Llama-2-70b-chat-hf",
@@ -24,7 +24,7 @@ llm = LLM(
     tensor_parallel_size=1,
     speculative_draft_tensor_parallel_size=1,
     gpu_memory_utilization=0.5,
-    enforce_eager=True,
+    # enforce_eager=True,
 )
 
 # os.environ["VLLM_ATTENTION_BACKEND"] = "FLASHINFER"
@@ -60,7 +60,7 @@ prompts = [
 
 request_outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
 print(f"{request_outputs[0].outputs[0].text=}")
-request_outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+# request_outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
 # request_outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
 
 # with torch.profiler.profile(
