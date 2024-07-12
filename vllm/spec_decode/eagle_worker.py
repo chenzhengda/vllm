@@ -89,7 +89,7 @@ class EagleWorker(MultiStepWorker):
                 self._append_new_tokens(model_output,
                                         copied_seq_group_metadata_list)
                 model_outputs.append(model_output)
-                execute_model_req.previous_hidden_states.hidden_states = model_output.hidden_states
+                copied_execute_model_req.previous_hidden_states.hidden_states = model_output.hidden_states
 
             return model_outputs, True
         else:
@@ -109,3 +109,36 @@ class EagleWorker(MultiStepWorker):
             model_outputs_topK = model_output[0][0]
             tree_candidates = model_output[0][1]
             return model_outputs_topK, False, tree_candidates
+        
+    def defragment_accepted_kv_blocks(self,
+                                      execute_model_req: Optional[ExecuteModelRequest] = None,
+                                      best_candidate_index: Optional[torch.Tensor] = None,
+                                      accepted_token_ids: Optional[torch.Tensor] = None,
+                                      previous_hidden_states: Optional[torch.Tensor] = None):
+        """Rerun the model forward pass accept_len times."""
+        
+        # Shallow copy input data so modifications (such as appending tokens)
+        # do not cause side-effects.
+        copied_seq_group_metadata_list = self._shallow_copy_inputs(
+            execute_model_req.seq_group_metadata_list)
+        copied_execute_model_req = execute_model_req.clone(
+            copied_seq_group_metadata_list)
+
+        num_max_accepted_tokens=max(accepted_token_ids.ne(-1).sum(dim=1).tolist())
+        for _ in range(num_max_accepted_tokens):
+            for seq_group_metadata, accepted_token in zip(
+                    copied_seq_group_metadata_list, accepted_token_ids):
+                for seq_id, old_seq_data in seq_group_metadata.seq_data.items():
+                    seq = seq_group_metadata.seq_data[seq_id]
+
+                    token_id = accepted_token[_].item()
+                    seq.append_token_id(token_id, logprob=0.0)
+                    seq.update_num_computed_tokens(1)
+
+            copied_execute_model_req.previous_hidden_states.hidden_states = previous_hidden_states[0][_].unsqueeze(0)
+
+            model_output = super().execute_model(
+                    execute_model_req=copied_execute_model_req)
+            assert (len(model_output) == 1
+                    ), "composing multistep workers not supported"
+            model_output = model_output[0]

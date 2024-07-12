@@ -455,6 +455,10 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             return True
         elif "defragment_accepted_kv_blocks" in data:
             self.scorer_worker.defragment_accepted_kv_blocks()
+            num_max_accepted_tokens = data["num_max_accepted_tokens"]
+            for _ in range(num_max_accepted_tokens):
+                self.proposer_worker.execute_model()
+
             return True
 
     @nvtx_range("spec_decode_worker._run_speculative_decoding_step")
@@ -494,6 +498,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
 
             broadcast_dict = dict(
                 defragment_accepted_kv_blocks=True,
+                num_max_accepted_tokens=max(accepted_token_ids.ne(-1).sum(dim=1).tolist()),
             )
             broadcast_tensor_dict(broadcast_dict, src=self._driver_rank)
 
@@ -522,11 +527,19 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         best_candidate_index: torch.Tensor,
         accepted_token_ids: torch.Tensor,
     ):
-        # pass
         self.scorer_worker.defragment_accepted_kv_blocks(
             execute_model_req, best_candidate_index, accepted_token_ids)
+        execute_model_req.previous_hidden_states = self.previous_hidden_states
         # self.proposer_worker.defragment_accepted_kv_blocks(
-        #     execute_model_req, best_candidate_index, accepted_token_ids, proposal_scores.extra_tensor_data)
+        #     execute_model_req,
+        #     best_candidate_index,
+        #     accepted_token_ids,
+        #     proposal_scores.hidden_states[
+        #         torch.arange(proposal_scores.hidden_states.size(0)),
+        #         best_candidate_index,
+        #         :,
+        #     ],
+        # )
 
 
     @nvtx_range("spec_decode_worker._verify_tokens")

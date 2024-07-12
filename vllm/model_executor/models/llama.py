@@ -688,7 +688,7 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA):
         kv_caches: List[torch.Tensor],
         attn_metadata: AttentionMetadata,
     ) -> torch.Tensor:
-        if self.tree_choices != [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0, 0]] and attn_metadata.num_decode_tokens > 0 and attn_metadata.max_query_len > 1:
+        if self.tree_choices != [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0, 0]] and attn_metadata.num_decode_tokens > 0 and attn_metadata.max_query_len is not None and attn_metadata.max_query_len > 1:
             position_ids = self.target_tree_buffer["tree_position_ids"][
                 None, :].to(attn_metadata.context_lens_tensor.device
                             ) + attn_metadata.context_lens_tensor
