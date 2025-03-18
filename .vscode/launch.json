@@ -1,0 +1,210 @@
+{
+  // 使用 IntelliSense 了解相关属性。
+  // 悬停以查看现有属性的描述。
+  // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python 调试程序: 包含参数的当前文件",
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/examples",
+      "python": "/root/miniconda3/envs/vllm/bin/python",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "args": "${command:pickArgs}",
+      "stopOnEntry": true,
+      "justMyCode": false
+    },
+    {
+      "name": "VLLM: API Server",
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/examples",
+      "python": "/root/miniconda3/envs/vllm/bin/python",
+      "module": "vllm.entrypoints.openai.api_server",
+      "console": "integratedTerminal",
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "0,1"
+        // "VLLM_USE_V1": "1"
+      },
+      "args": [
+        "--model",
+        "/data/jieni/workspace/models/Qwen2.5-0.5B-Instruct/",
+        "--port",
+        "8101",
+        "--enforce-eager",
+        "--tensor-parallel-size",
+        "2",
+        "--max-model-len",
+        "32768",
+        "--gpu-memory-utilization",
+        "0.2"
+      ],
+      "stopOnEntry": true,
+      "justMyCode": false
+    },
+    {
+      "type": "bashdb",
+      "request": "launch",
+      "name": "Bash-Debug (benchmarks)",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/.buildkite/nightly-benchmarks/scripts/run-performance-benchmarks.sh",
+      "args": [],
+      "env": {
+        // "http_proxy": "http://10.11.213.152:23456",
+        // "https_proxy": "http://10.11.213.152:23456",
+        // "VLLM_SOURCE_CODE_LOC": "${workspaceFolder}"
+      }
+    },
+    {
+      "name": "Python: Benchmark Serving",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "/root/miniconda3/envs/vllm-master/bin/python",
+      "module": "red_llmperf.benchmark_serving",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/red-llmperf",
+      "stopOnEntry": true,
+      "justMyCode": false,
+      "args": [
+        "--backend",
+        "vllm",
+        "--dataset-name",
+        "random",
+        "--random-input-len",
+        "100",
+        "--random-input-len",
+        "128",
+        "--ignore-eos",
+        "--model",
+        "Qwen/Qwen2-0.5B-Instruct",
+        "--num-prompts",
+        "20",
+        "--endpoint",
+        "/v1/completions",
+        "--tokenizer",
+        "Qwen/Qwen2-0.5B-Instruct",
+        "--save-result",
+        "--percentile-metrics",
+        "ttft,tpot,itl,e2el",
+        "--metric-percentiles",
+        "30,50,70,90,99",
+        "--goodput",
+        "ttft:500",
+        "tpot:14",
+        "e2el:2500"
+      ],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      }
+    },
+    {
+      "name": "Prefill: API Server",
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/examples",
+      "python": "/root/miniconda3/envs/vllm/bin/python",
+      "module": "vllm.entrypoints.openai.api_server",
+      "console": "integratedTerminal",
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "0",
+        "LMCACHE_USE_EXPERIMENTAL": "True",
+        "LMCACHE_CONFIG_FILE": "/workspace/lmcache.yaml"
+        // "VLLM_USE_V1": "1"
+      },
+      "args": [
+        "--model",
+        "/data/jieni/workspace/models/Qwen2.5-0.5B-Instruct",
+        "--port",
+        "8101",
+        "--max-model-len",
+        "32768",
+        "--enforce-eager",
+        "--gpu-memory-utilization",
+        "0.1",
+        "--uvicorn-log-level",
+        "debug",
+        // "--kv-transfer-config", "{\"kv_connector\":\"PyNcclConnector\",\"kv_ip\":\"127.0.0.1\",\"kv_port\":14579, \"kv_role\":\"kv_producer\",\"kv_rank\":0,\"kv_parallel_size\":2}"
+        "--kv-transfer-config",
+        "{\"kv_connector\":\"LMCacheConnector\",\"kv_ip\":\"127.0.0.1\",\"kv_port\":14579, \"kv_role\":\"kv_producer\"}"
+      ],
+      "stopOnEntry": true,
+      "justMyCode": false
+    },
+    {
+      "name": "Decode: API Server",
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/examples",
+      "python": "/root/miniconda3/envs/vllm/bin/python",
+      "module": "vllm.entrypoints.openai.api_server",
+      "console": "integratedTerminal",
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "1",
+        "LMCACHE_USE_EXPERIMENTAL": "True",
+        "LMCACHE_CONFIG_FILE": "/workspace/lmcache.yaml"
+        // "VLLM_USE_V1": "1"
+      },
+      "args": [
+        "--model",
+        "/data/jieni/workspace/models/Qwen2.5-0.5B-Instruct",
+        "--port",
+        "8102",
+        "--enforce-eager",
+        "--max-model-len",
+        "32768",
+        "--gpu-memory-utilization",
+        "0.1",
+        "--uvicorn-log-level",
+        "debug",
+        // "--kv-transfer-config", "{\"kv_connector\":\"PyNcclConnector\",\"kv_ip\":\"127.0.0.1\",\"kv_port\":14599, \"kv_role\":\"kv_consumer\",\"kv_rank\":1,\"kv_parallel_size\":2}"
+        "--kv-transfer-config",
+        "{\"kv_connector\":\"LMCacheConnector\",\"kv_ip\":\"127.0.0.1\",\"kv_port\":14579, \"kv_role\":\"kv_consumer\"}"
+      ],
+      "stopOnEntry": true,
+      "justMyCode": false
+    },
+    {
+      "name": "KV Transfer Test: Rank 0",
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/tests/kv_transfer",
+      "program": "${workspaceFolder}/tests/kv_transfer/test_send_recv.py",
+      "console": "integratedTerminal",
+      "env": {
+        "RANK": "0"
+        // "CUDA_VISIBLE_DEVICES": "0"
+      },
+      "stopOnEntry": true,
+      "justMyCode": false
+    },
+    {
+      "name": "KV Transfer Test: Rank 1",
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/tests/kv_transfer",
+      "program": "${workspaceFolder}/tests/kv_transfer/test_send_recv.py",
+      "console": "integratedTerminal",
+      "env": {
+        "RANK": "1"
+        // "CUDA_VISIBLE_DEVICES": "1"
+      },
+      "stopOnEntry": true,
+      "justMyCode": false
+    },
+    {
+      "name": "Python: Torchrun Debug",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "torch.distributed.run",
+      "console": "integratedTerminal",
+      "args": ["--nproc-per-node=4", "${file}"],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "stopOnEntry": false,
+      "justMyCode": false
+    }
+  ]
+}

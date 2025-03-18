@@ -173,7 +173,7 @@ cython_debug/
 .idea/
 
 # VSCode
-.vscode/
+#.vscode/
 
 # DS Store
 .DS_Store
