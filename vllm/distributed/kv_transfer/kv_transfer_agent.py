@@ -8,6 +8,7 @@ This implementation is a shim wrapper on two APIs exposed by `kv_connector`:
 from typing import TYPE_CHECKING, List, Tuple, Union
 
 if TYPE_CHECKING:
+    from vllm.attention import AttentionMetadata
     from vllm.worker.model_runner import ModelInputForGPUWithSamplingMetadata
     from vllm.config import VllmConfig
 
@@ -17,6 +18,8 @@ from vllm.distributed.kv_transfer.kv_connector.factory import (
     KVConnectorFactory)
 from vllm.logger import init_logger
 from vllm.sequence import IntermediateTensors
+
+
 
 logger = init_logger(__name__)
 
@@ -68,9 +71,28 @@ class KVTransferAgent:
     def recv_kv_caches_and_hidden_states(
         self, model_executable: torch.nn.Module,
         model_input: "ModelInputForGPUWithSamplingMetadata",
-        kv_caches: List[torch.Tensor]
+        kv_caches: List[torch.Tensor],
+        **kwargs,
     ) -> Tuple[Union[torch.Tensor, IntermediateTensors], bool,
                "ModelInputForGPUWithSamplingMetadata"]:
 
         return self.connector.recv_kv_caches_and_hidden_states(
-            model_executable, model_input, kv_caches)
+            model_executable, model_input, kv_caches, **kwargs)
+
+    def send_one_layer_kv_cache(self,
+                                input_token_hash: List[str],
+                                model_executable: torch.nn.Module,
+                                model_input: "ModelInputForGPUWithSamplingMetadata",
+                                kv_caches: List[torch.Tensor],
+                                layer_id: int) -> None:
+        self.connector.send_one_layer_kv_cache(input_token_hash,
+                                               model_executable,
+                                               model_input,
+                                               kv_caches,
+                                               layer_id)
+
+    def send_hidden_states(self, input_token_hash: List[str],
+                           hidden_states: torch.Tensor,
+                           model_input: "ModelInputForGPUWithSamplingMetadata") -> None:
+        self.connector.send_hidden_states(input_token_hash, hidden_states,
+                                          model_input)

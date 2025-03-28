@@ -48,6 +48,8 @@ def _init_attn_metadata_from_tensor_dict(
         if field.name in tensor_dict:
             if field.name == "input_positions":
                 valid_attn_kwargs[field.name] = tensor_dict[field.name]
+            elif field.name == "seq_lens":
+                valid_attn_kwargs[field.name] = tensor_dict[field.name]
             else:
                 valid_attn_kwargs[field.name] = tensor_dict.pop(field.name)
 

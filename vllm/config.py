@@ -2903,6 +2903,12 @@ class KVTransferConfig(BaseModel):
         return self.kv_connector is not None and \
             self.kv_role in ["kv_consumer", "kv_both"]
 
+    @property
+    def is_layerwise_kv_transfer(self) -> bool:
+        return self.kv_connector is not None and self.kv_connector in [
+            "LMCacheConnector"
+        ]
+
     def get_from_extra_config(self, key, default) -> Any:
         return self.kv_connector_extra_config.get(key, default)
 

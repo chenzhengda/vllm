@@ -105,6 +105,7 @@ class ModelInputForGPU(ModelRunnerInputBase):
         tensor_dict = {
             "input_tokens": self.input_tokens,
             "input_positions": self.input_positions,
+            "seq_lens": self.seq_lens,
             "lora_requests": self.lora_requests,
             "lora_mapping": self.lora_mapping,
             "multi_modal_kwargs": self.multi_modal_kwargs,
@@ -156,6 +157,7 @@ class ModelInputForGPUWithSamplingMetadata(ModelInputForGPU):
         tensor_dict = {
             "input_tokens": self.input_tokens,
             "input_positions": self.input_positions,
+            "seq_lens": self.seq_lens,
             "lora_requests": self.lora_requests,
             "lora_mapping": self.lora_mapping,
             "multi_modal_kwargs": self.multi_modal_kwargs,
@@ -1743,6 +1745,10 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
             model_forward_end = torch.cuda.Event(enable_timing=True)
             model_forward_start.record()
 
+        if self.need_send_kv(model_input, kv_caches):
+            model_kwargs["model_input"] = model_input
+            model_kwargs["kv_caches"] = kv_caches
+
         if not bypass_model_exec:
             with set_forward_context(model_input.attn_metadata,
                                      self.vllm_config, virtual_engine):
@@ -1763,6 +1769,7 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         # Sending KV cache in distributed KV cache transfer setting
         # NOTE: the send operation is non-blocking
         if self.need_send_kv(model_input, kv_caches):
+            # TODO(Jiayi): Skip if layerwise kv transfer
             get_kv_transfer_group().send_kv_caches_and_hidden_states(
                 # model_executable is used to know which layer the current
                 # worker is working on, so that we can send KV for only those

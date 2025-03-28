@@ -213,7 +213,8 @@ class SimpleConnector(KVConnectorBase):
     def recv_kv_caches_and_hidden_states(
         self, model_executable: torch.nn.Module,
         model_input: "ModelInputForGPUWithSamplingMetadata",
-        kv_caches: List[torch.Tensor]
+        kv_caches: List[torch.Tensor],
+        **kwargs,
     ) -> Tuple[Union[torch.Tensor, IntermediateTensors], bool,
                "ModelInputForGPUWithSamplingMetadata"]:
 
