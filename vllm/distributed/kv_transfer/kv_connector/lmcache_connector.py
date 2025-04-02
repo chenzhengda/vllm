@@ -36,7 +36,7 @@ class LMCacheConnector(KVConnectorBase):
 
         from lmcache.integration.vllm.vllm_adapter import (
             RetrieveStatus, StoreStatus, init_lmcache_engine,
-            lmcache_retrieve_kv, lmcache_should_store, lmcache_store_kv, lmcache_store_kv_layerwise, lmcache_store_hidden_states)
+            lmcache_retrieve_kv, lmcache_should_store, lmcache_store_kv, lmcache_store_kv_layerwise, lmcache_store_hidden_states_layerwise)
 
         logger.info("Initializing LMCacheConfig under kv_transfer_config %s",
                     self.transfer_config)
@@ -53,7 +53,7 @@ class LMCacheConnector(KVConnectorBase):
         self.lmcache_retrieve_kv = lmcache_retrieve_kv
         self.lmcache_store_kv = lmcache_store_kv
         self.lmcache_store_kv_layerwise = lmcache_store_kv_layerwise
-        self.lmcache_store_hidden_states = lmcache_store_hidden_states
+        self.lmcache_store_hidden_states_layerwise = lmcache_store_hidden_states_layerwise
         self.lmcache_should_store = lmcache_should_store
         self.store_status = StoreStatus
         self.retrieve_status = RetrieveStatus
@@ -115,7 +115,7 @@ class LMCacheConnector(KVConnectorBase):
             logger.info(f"[{int(time.time() * 1000)}ms] KV 缓存总存储时间: {total_kv_time:.2f}ms")
 
             start_time = time.time()
-            self.lmcache_store_hidden_states(
+            self.lmcache_store_hidden_states_layerwise(
                 self.model_config,
                 self.parallel_config,
                 self.cache_config,
@@ -162,7 +162,7 @@ class LMCacheConnector(KVConnectorBase):
                            hidden_states: torch.Tensor,
                            model_input: "ModelInputForGPUWithSamplingMetadata") -> None:
         print("TODO: send_hidden_states for input_token_hash: ", input_token_hash, "seq_lens: ", model_input.seq_lens)
-        # self.lmcache_store_hidden_states(
+        # self.lmcache_store_hidden_states_layerwise(
         #     self.model_config,
         #     self.parallel_config,
         #     self.cache_config,
