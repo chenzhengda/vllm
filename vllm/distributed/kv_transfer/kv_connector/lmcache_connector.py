@@ -94,37 +94,38 @@ class LMCacheConnector(KVConnectorBase):
     ) -> None:
         # 分层存储KV缓存
         if self.engine.config.enable_layerwise_kv:
-            num_layers = self.model_config.get_num_layers(self.parallel_config)
-            total_kv_time = 0
-            for layer_id in range(num_layers):
-                start_time = time.time()
-                self.lmcache_store_kv_layerwise(
-                    self.model_config,
-                    self.parallel_config,
-                    self.cache_config,
-                    model_executable,
-                    model_input,
-                    kv_caches,
-                    hidden_or_intermediate_states,
-                    layer_id,
-                )
-                layer_time = (time.time() - start_time) * 1000  # 转换为毫秒
-                total_kv_time += layer_time
-                logger.info(f"第 {layer_id} 层 KV 缓存存储时间: {layer_time:.2f}ms")
+            pass
+            # num_layers = self.model_config.get_num_layers(self.parallel_config)
+            # total_kv_time = 0
+            # for layer_id in range(num_layers):
+            #     start_time = time.time()
+            #     self.lmcache_store_kv_layerwise(
+            #         self.model_config,
+            #         self.parallel_config,
+            #         self.cache_config,
+            #         model_executable,
+            #         model_input,
+            #         kv_caches,
+            #         hidden_or_intermediate_states,
+            #         layer_id,
+            #     )
+            #     layer_time = (time.time() - start_time) * 1000  # 转换为毫秒
+            #     total_kv_time += layer_time
+            #     logger.info(f"第 {layer_id} 层 KV 缓存存储时间: {layer_time:.2f}ms")
             
-            logger.info(f"[{int(time.time() * 1000)}ms] KV 缓存总存储时间: {total_kv_time:.2f}ms")
+            # logger.info(f"[{int(time.time() * 1000)}ms] KV 缓存总存储时间: {total_kv_time:.2f}ms")
 
-            start_time = time.time()
-            self.lmcache_store_hidden_states_layerwise(
-                self.model_config,
-                self.parallel_config,
-                self.cache_config,
-                model_executable,
-                model_input,
-                hidden_or_intermediate_states,
-            )
-            hidden_time = (time.time() - start_time) * 1000  # 转换为毫秒
-            logger.info(f"[{int(time.time() * 1000)}ms] 隐藏状态存储时间: {hidden_time:.2f}ms")
+            # start_time = time.time()
+            # self.lmcache_store_hidden_states_layerwise(
+            #     self.model_config,
+            #     self.parallel_config,
+            #     self.cache_config,
+            #     model_executable,
+            #     model_input,
+            #     hidden_or_intermediate_states,
+            # )
+            # hidden_time = (time.time() - start_time) * 1000  # 转换为毫秒
+            # logger.info(f"[{int(time.time() * 1000)}ms] 隐藏状态存储时间: {hidden_time:.2f}ms")
         else:
             self.lmcache_store_kv(
                 self.model_config,
@@ -138,40 +139,40 @@ class LMCacheConnector(KVConnectorBase):
                 )
 
     def send_one_layer_kv_cache(self,
-                                input_token_hash: List[str],    
                                 model_executable: torch.nn.Module,
                                 model_input: "ModelInputForGPUWithSamplingMetadata",
                                 kv_caches: List[torch.Tensor],
-                                layer_id: int) -> None:
-        print("TODO: send_one_layer_kv_cache for layer_id: ", layer_id, "input_token_hash: ", input_token_hash, "seq_lens: ", model_input.seq_lens)
-        # self.lmcache_store_kv_layerwise(
-        #     self.model_config,
-        #     self.parallel_config,
-        #     self.cache_config,
-        #     model_executable,
-        #     model_input,
-        #     kv_caches,
-        #     None,
-        #     layer_id,
-        # )
-        # seq_lens = attn_metadata.seq_lens
-        # slot_mapping_flat = attn_metadata.slot_mapping.flatten()
-        # assert len(input_token_hash) == len(seq_lens)
+                                layer_id: int,
+                                **kwargs) -> None:
+        if self.engine.config.enable_layerwise_kv:
+            print("TODO: send_one_layer_kv_cache for layer_id: ", layer_id, "seq_lens: ", model_input.seq_lens)
+            self.lmcache_store_kv_layerwise(
+                self.model_config,
+                self.parallel_config,
+                self.cache_config,
+                model_executable,
+                model_input,
+                kv_caches,
+                None,
+                layer_id,
+            )
 
-    def send_hidden_states(self, input_token_hash: List[str],
-                           hidden_states: torch.Tensor,
-                           model_input: "ModelInputForGPUWithSamplingMetadata") -> None:
-        print("TODO: send_hidden_states for input_token_hash: ", input_token_hash, "seq_lens: ", model_input.seq_lens)
-        # self.lmcache_store_hidden_states_layerwise(
-        #     self.model_config,
-        #     self.parallel_config,
-        #     self.cache_config,
-        #     model_executable=None,  # 无需传递model_executable
-        #     model_input=model_input,
-        #     hidden_states=hidden_states,
-        # )
-        # seq_lens = attn_metadata.seq_lens
-        # assert len(input_token_hash) == len(seq_lens)
+    def send_hidden_states(self,
+                            model_executable: torch.nn.Module,
+                            model_input: "ModelInputForGPUWithSamplingMetadata",    
+                            hidden_or_intermediate_states: Union[torch.Tensor,
+                                                                IntermediateTensors],
+                            **kwargs) -> None:
+        if self.engine.config.enable_layerwise_kv:
+            print("TODO: send_hidden_states for seq_lens: ", model_input.seq_lens)
+            self.lmcache_store_hidden_states_layerwise(
+                self.model_config,
+                self.parallel_config,
+                self.cache_config,
+                model_executable,
+                model_input,
+                hidden_or_intermediate_states,
+            )
 
     def close(self):
         self.engine.close()

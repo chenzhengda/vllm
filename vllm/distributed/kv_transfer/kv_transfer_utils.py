@@ -83,39 +83,38 @@ def register_model_PD_disagg_hooks(model: torch.nn.Module,
         if input_ids.view(-1)[0].item() == 0:
             return
 
-        if 'model_input' not in kwargs:
-            raise ValueError("No model_input tensor found in kwargs.")
-        if 'kv_caches' not in kwargs:
-            raise ValueError("No kv_caches tensor found in kwargs.")
+        # if 'model_input' not in kwargs:
+        #     raise ValueError("No model_input tensor found in kwargs.")
+        # if 'kv_caches' not in kwargs:
+        #     raise ValueError("No kv_caches tensor found in kwargs.")
         
-        model_input = kwargs['model_input']
-        kv_caches = kwargs['kv_caches']
+        # model_input = kwargs['model_input']
+        # kv_caches = kwargs['kv_caches']
 
-        input_id_hashes = []
-        start_pos = 0
-        for seq_length in model_input.seq_lens:
-            end_pos = start_pos + seq_length
-            input_id_hashes.append(
-                get_tensor_stable_hash(input_ids[start_pos:end_pos]))
-            start_pos = end_pos
+        # input_id_hashes = []
+        # start_pos = 0
+        # for seq_length in model_input.seq_lens:
+        #     end_pos = start_pos + seq_length
+        #     input_id_hashes.append(
+        #         get_tensor_stable_hash(input_ids[start_pos:end_pos]))
+        #     start_pos = end_pos
 
         context_dict = {
-            'input_id_hashes': input_id_hashes,
+            # 'input_id_hashes': input_id_hashes,
             'block_size': vllm_config.cache_config.block_size
         }
         set_context_value(context_dict)
 
     def post_forward_hook(module, args, kwargs, output):
-
         # in case of PP, the output might be of IntermediateTensors type
         if not isinstance(output, torch.Tensor):
             return output
 
         context = get_context_value()
-        if context is None or 'input_id_hashes' not in context:
+        if context is None or 'block_size' not in context:
             return output
 
-        input_id_hashes = get_context_value()['input_id_hashes']
+        # input_id_hashes = get_context_value()['input_id_hashes']
 
         if 'model_input' not in kwargs:
             raise ValueError("No model_input tensor found in kwargs.")
@@ -134,9 +133,11 @@ def register_model_PD_disagg_hooks(model: torch.nn.Module,
 
         hidden_states = output
 
-        get_kv_transfer_group().send_hidden_states(input_id_hashes,
-                                                   hidden_states,
-                                                   model_input)
+        get_kv_transfer_group().send_hidden_states(
+            module,
+            model_input,
+            hidden_states,
+        )
 
         return output
 
@@ -159,12 +160,12 @@ def register_decoder_layer_PD_disagg_hooks(module: torch.nn.Module,
             context = get_context_value()
             if context is None:
                 return output
-            if any(key not in context
-                   for key in ('input_id_hashes', 'block_size')):
-                return output
+            # if any(key not in context
+            #        for key in ('input_id_hashes', 'block_size')):
+            #     return output
 
-            input_id_hashes = context['input_id_hashes']
-            block_size = context['block_size']
+            # input_id_hashes = context['input_id_hashes']
+            # block_size = context['block_size']
 
             model_input = kwargs['model_input']
             kv_caches = kwargs['kv_caches']
@@ -175,7 +176,6 @@ def register_decoder_layer_PD_disagg_hooks(module: torch.nn.Module,
             def _async_send():
                 try:
                     result = get_kv_transfer_group().send_one_layer_kv_cache(
-                        input_id_hashes,
                         module,
                         model_input,
                         kv_caches,

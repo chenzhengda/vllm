@@ -80,19 +80,25 @@ class KVTransferAgent:
             model_executable, model_input, kv_caches, **kwargs)
 
     def send_one_layer_kv_cache(self,
-                                input_token_hash: List[str],
                                 model_executable: torch.nn.Module,
                                 model_input: "ModelInputForGPUWithSamplingMetadata",
                                 kv_caches: List[torch.Tensor],
-                                layer_id: int) -> None:
-        self.connector.send_one_layer_kv_cache(input_token_hash,
-                                               model_executable,
-                                               model_input,
-                                               kv_caches,
-                                               layer_id)
+                                layer_id: int,
+                                **kwargs) -> None:
+        self.connector.send_one_layer_kv_cache(
+            model_executable,
+            model_input,
+            kv_caches,
+            layer_id,
+            **kwargs)
 
-    def send_hidden_states(self, input_token_hash: List[str],
-                           hidden_states: torch.Tensor,
-                           model_input: "ModelInputForGPUWithSamplingMetadata") -> None:
-        self.connector.send_hidden_states(input_token_hash, hidden_states,
-                                          model_input)
+    def send_hidden_states(self,
+                            model_executable: torch.nn.Module,
+                            model_input: "ModelInputForGPUWithSamplingMetadata",
+                            hidden_or_intermediate_states: Union[torch.Tensor,
+                                                                IntermediateTensors],
+                            **kwargs) -> None:
+        self.connector.send_hidden_states(model_executable,
+                                          model_input,
+                                          hidden_or_intermediate_states,
+                                          **kwargs)

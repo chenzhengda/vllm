@@ -175,11 +175,11 @@ class KVConnectorBase(ABC):
         raise NotImplementedError
 
     def send_one_layer_kv_cache(self, 
-                                input_token_hash: List[str],
                                 model_executable: torch.nn.Module,
                                 model_input: "ModelInputForGPUWithSamplingMetadata",
                                 kv_caches: List[torch.Tensor],
-                                layer_id: int) -> None:
+                                layer_id: int,
+                                **kwargs) -> None:
         """
         Sends the KV cache of a single layer to the connector.
         This method transmits the KV cache for a specific transformer layer,
@@ -201,9 +201,12 @@ class KVConnectorBase(ABC):
         """
         raise NotImplementedError
 
-    def send_hidden_states(self, input_token_hash: List[str],
-                           hidden_states: torch.Tensor,
-                           model_input: "ModelInputForGPUWithSamplingMetadata") -> None:
+    def send_hidden_states(self,
+                           model_executable: torch.nn.Module,
+                           model_input: "ModelInputForGPUWithSamplingMetadata",
+                           hidden_or_intermediate_states: Union[torch.Tensor,
+                                                                IntermediateTensors],
+                           **kwargs) -> None:
         """
         Sends hidden states to the connector.
         Transmits computed hidden states along with attention metadata,
