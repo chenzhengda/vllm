@@ -703,6 +703,7 @@ class CompletionRequest(OpenAIBaseModel):
     # https://platform.openai.com/docs/api-reference/completions/create
     model: Optional[str] = None
     prompt: Union[list[int], list[list[int]], str, list[str]]
+    request_id: Optional[str] = None
     best_of: Optional[int] = None
     echo: Optional[bool] = False
     frequency_penalty: Optional[float] = 0.0

@@ -90,7 +90,7 @@ class OpenAIServingCompletion(OpenAIServing):
             return self.create_error_response(
                 "suffix is not currently supported")
 
-        request_id = f"cmpl-{self._base_request_id(raw_request)}"
+        request_id = f"cmpl-{self._base_request_id(raw_request, request.request_id)}"
         created_time = int(time.time())
 
         request_metadata = RequestResponseMetadata(request_id=request_id)
@@ -141,7 +141,9 @@ class OpenAIServingCompletion(OpenAIServing):
                         self.model_config.logits_processor_pattern,
                         self.default_sampling_params)
 
-                request_id_item = f"{request_id}-{i}"
+                # FIXME(jieni),暂时不考虑multi prompts in one request
+                # request_id_item = f"{request_id}-{i}"
+                request_id_item = f"{request_id}"
 
                 self._log_inputs(request_id_item,
                                  request_prompts[i],

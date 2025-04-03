@@ -1,22 +1,22 @@
-# SPDX-License-Identifier: Apache-2.0
 """
-LMCache KV Cache Connector for Distributed Machine Learning Inference
+Simple KV Cache Connector for Distributed Machine Learning Inference
 
 The LMCacheConnector can (1) transfer KV caches between prefill vLLM worker
 (KV cache producer) and decode vLLM worker (KV cache consumer) using LMCache;
-(2) offload and share KV caches.
+(2) offload and share KV caches. Only (2) is supported for now.
 """
 
 from typing import TYPE_CHECKING, List, Tuple, Union
 
 import torch
-
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.base import KVConnectorBase
 from vllm.logger import init_logger
 from vllm.sequence import IntermediateTensors
+import time
 
 if TYPE_CHECKING:
+    from vllm.attention import AttentionMetadata
     from vllm.worker.model_runner import ModelInputForGPUWithSamplingMetadata
 
 logger = init_logger(__name__)
@@ -34,28 +34,26 @@ class LMCacheConnector(KVConnectorBase):
         self.transfer_config = config.kv_transfer_config
         self.vllm_config = config
 
-        from lmcache.experimental.cache_engine import LMCacheEngineBuilder
-        from lmcache.integration.vllm.utils import ENGINE_NAME
         from lmcache.integration.vllm.vllm_adapter import (
             RetrieveStatus, StoreStatus, init_lmcache_engine,
-            lmcache_retrieve_kv, lmcache_should_retrieve, lmcache_should_store,
-            lmcache_store_kv)
+            lmcache_retrieve_kv, lmcache_should_store, lmcache_store_kv, lmcache_store_kv_layerwise, lmcache_store_hidden_states_layerwise)
+
         logger.info("Initializing LMCacheConfig under kv_transfer_config %s",
                     self.transfer_config)
 
         # TODO (Jiayi): Find model_config, parallel_config, and cache_config
         self.engine = init_lmcache_engine(config.model_config,
                                           config.parallel_config,
-                                          config.cache_config)
-        self.lmcache_engine_name = ENGINE_NAME
-        self.lmcache_engine_builder = LMCacheEngineBuilder
+                                          config.cache_config,
+                                          config.kv_transfer_config)
 
         self.model_config = config.model_config
         self.parallel_config = config.parallel_config
         self.cache_config = config.cache_config
         self.lmcache_retrieve_kv = lmcache_retrieve_kv
         self.lmcache_store_kv = lmcache_store_kv
-        self.lmcache_should_retrieve = lmcache_should_retrieve
+        self.lmcache_store_kv_layerwise = lmcache_store_kv_layerwise
+        self.lmcache_store_hidden_states_layerwise = lmcache_store_hidden_states_layerwise
         self.lmcache_should_store = lmcache_should_store
         self.store_status = StoreStatus
         self.retrieve_status = RetrieveStatus
@@ -63,15 +61,27 @@ class LMCacheConnector(KVConnectorBase):
     def recv_kv_caches_and_hidden_states(
         self, model_executable: torch.nn.Module,
         model_input: "ModelInputForGPUWithSamplingMetadata",
-        kv_caches: List[torch.Tensor]
+        kv_caches: List[torch.Tensor],
+        **kwargs,
     ) -> Tuple[Union[torch.Tensor, IntermediateTensors], bool,
                "ModelInputForGPUWithSamplingMetadata"]:
 
-        retrieve_status = self.lmcache_should_retrieve(model_input)
-        model_input, bypass_model_exec, hidden_or_intermediate_states =\
+        start_time = time.time()
+        model_input, bypass_model_exec, hidden_or_intermediate_states = \
             self.lmcache_retrieve_kv(
-                model_executable, model_input, self.cache_config, kv_caches,
-                retrieve_status)
+                self.model_config,
+                self.parallel_config,
+                self.cache_config,
+                model_executable,
+                model_input,
+                kv_caches
+            )
+        retrieve_time = (time.time() - start_time) * 1000  # 转换为毫秒
+        logger.info(f"[{int(time.time() * 1000)}ms] KV缓存和隐藏状态获取时间: {retrieve_time:.2f}ms")
+
+        if hidden_or_intermediate_states is None:
+            bypass_model_exec = False
+
         return hidden_or_intermediate_states, bypass_model_exec, model_input
 
     def send_kv_caches_and_hidden_states(
@@ -82,17 +92,87 @@ class LMCacheConnector(KVConnectorBase):
         hidden_or_intermediate_states: Union[torch.Tensor,
                                              IntermediateTensors],
     ) -> None:
+        # 分层存储KV缓存
+        if self.engine.config.enable_layerwise_kv:
+            pass
+            # num_layers = self.model_config.get_num_layers(self.parallel_config)
+            # total_kv_time = 0
+            # for layer_id in range(num_layers):
+            #     start_time = time.time()
+            #     self.lmcache_store_kv_layerwise(
+            #         self.model_config,
+            #         self.parallel_config,
+            #         self.cache_config,
+            #         model_executable,
+            #         model_input,
+            #         kv_caches,
+            #         hidden_or_intermediate_states,
+            #         layer_id,
+            #     )
+            #     layer_time = (time.time() - start_time) * 1000  # 转换为毫秒
+            #     total_kv_time += layer_time
+            #     logger.info(f"第 {layer_id} 层 KV 缓存存储时间: {layer_time:.2f}ms")
+            
+            # logger.info(f"[{int(time.time() * 1000)}ms] KV 缓存总存储时间: {total_kv_time:.2f}ms")
 
-        store_status = self.lmcache_should_store(model_input)
-        self.lmcache_store_kv(
-            self.model_config,
-            self.parallel_config,
-            self.cache_config,
-            model_executable,
-            model_input,
-            kv_caches,
-            store_status,
-        )
+            # start_time = time.time()
+            # self.lmcache_store_hidden_states_layerwise(
+            #     self.model_config,
+            #     self.parallel_config,
+            #     self.cache_config,
+            #     model_executable,
+            #     model_input,
+            #     hidden_or_intermediate_states,
+            # )
+            # hidden_time = (time.time() - start_time) * 1000  # 转换为毫秒
+            # logger.info(f"[{int(time.time() * 1000)}ms] 隐藏状态存储时间: {hidden_time:.2f}ms")
+        else:
+            self.lmcache_store_kv(
+                self.model_config,
+                self.parallel_config,
+                self.cache_config,
+                model_executable,
+                model_input,
+                kv_caches,
+                # store_status,
+                hidden_or_intermediate_states,
+                )
+
+    def send_one_layer_kv_cache(self,
+                                model_executable: torch.nn.Module,
+                                model_input: "ModelInputForGPUWithSamplingMetadata",
+                                kv_caches: List[torch.Tensor],
+                                layer_id: int,
+                                **kwargs) -> None:
+        if self.engine.config.enable_layerwise_kv:
+            print("TODO: send_one_layer_kv_cache for layer_id: ", layer_id, "seq_lens: ", model_input.seq_lens)
+            self.lmcache_store_kv_layerwise(
+                self.model_config,
+                self.parallel_config,
+                self.cache_config,
+                model_executable,
+                model_input,
+                kv_caches,
+                None,
+                layer_id,
+            )
+
+    def send_hidden_states(self,
+                            model_executable: torch.nn.Module,
+                            model_input: "ModelInputForGPUWithSamplingMetadata",    
+                            hidden_or_intermediate_states: Union[torch.Tensor,
+                                                                IntermediateTensors],
+                            **kwargs) -> None:
+        if self.engine.config.enable_layerwise_kv:
+            print("TODO: send_hidden_states for seq_lens: ", model_input.seq_lens)
+            self.lmcache_store_hidden_states_layerwise(
+                self.model_config,
+                self.parallel_config,
+                self.cache_config,
+                model_executable,
+                model_input,
+                hidden_or_intermediate_states,
+            )
 
     def close(self):
-        self.lmcache_engine_builder.destroy(self.lmcache_engine_name)
+        self.engine.close()

@@ -74,7 +74,6 @@ TModelInputForGPU = TypeVar('TModelInputForGPU', bound="ModelInputForGPU")
 torch._dynamo.config.cache_size_limit = 128
 torch._dynamo.config.accumulated_cache_size_limit = 128
 
-
 @dataclass(frozen=True)
 class ModelInputForGPU(ModelRunnerInputBase):
     """
@@ -100,11 +99,13 @@ class ModelInputForGPU(ModelRunnerInputBase):
     async_callback: Optional[Callable] = None
     scheduler_outputs: Optional[SchedulerOutputs] = None
     previous_hidden_states: Optional[torch.Tensor] = None
+    request_ids: Optional[List[str]] = None
 
     def as_broadcastable_tensor_dict(self) -> Dict[str, Any]:
         tensor_dict = {
             "input_tokens": self.input_tokens,
             "input_positions": self.input_positions,
+            "seq_lens": self.seq_lens,
             "lora_requests": self.lora_requests,
             "lora_mapping": self.lora_mapping,
             "multi_modal_kwargs": self.multi_modal_kwargs,
@@ -113,6 +114,7 @@ class ModelInputForGPU(ModelRunnerInputBase):
             "virtual_engine": self.virtual_engine,
             "request_ids_to_seq_ids": self.request_ids_to_seq_ids,
             "finished_requests_ids": self.finished_requests_ids,
+            "request_ids": self.request_ids,
         }
         _add_attn_metadata_broadcastable_dict(tensor_dict, self.attn_metadata)
         return tensor_dict
@@ -155,6 +157,7 @@ class ModelInputForGPUWithSamplingMetadata(ModelInputForGPU):
         tensor_dict = {
             "input_tokens": self.input_tokens,
             "input_positions": self.input_positions,
+            "seq_lens": self.seq_lens,
             "lora_requests": self.lora_requests,
             "lora_mapping": self.lora_mapping,
             "multi_modal_kwargs": self.multi_modal_kwargs,
@@ -163,6 +166,7 @@ class ModelInputForGPUWithSamplingMetadata(ModelInputForGPU):
             "virtual_engine": self.virtual_engine,
             "request_ids_to_seq_ids": self.request_ids_to_seq_ids,
             "finished_requests_ids": self.finished_requests_ids,
+            "request_ids": self.request_ids,
         }
         _add_attn_metadata_broadcastable_dict(tensor_dict, self.attn_metadata)
         _add_sampling_metadata_broadcastable_dict(tensor_dict,
@@ -878,6 +882,8 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
             for data in self.inter_data_list
         }
 
+        request_ids = [data.request_id for data in self.inter_data_list]
+
         cuda_graph_pad_size = self._get_cuda_graph_pad_size(
             num_seqs=len(seq_lens),
             max_decode_seq_len=max_decode_seq_len,
@@ -991,7 +997,8 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
             request_ids_to_seq_ids=request_ids_to_seq_ids,
             finished_requests_ids=self.finished_requests_ids,
             prompt_adapter_mapping=prompt_adapter_mapping,
-            prompt_adapter_requests=prompt_adapter_requests)
+            prompt_adapter_requests=prompt_adapter_requests,
+            request_ids = request_ids)
 
 
 class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
@@ -1631,6 +1638,8 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         ModelInputForGPUWithSamplingMetadata)
     _builder_cls: Type[ModelInputForGPUBuilder] = ModelInputForGPUBuilder
 
+    _fake_sample_output: Optional[SamplerOutput] = None
+
     def make_model_input_from_broadcasted_tensor_dict(
         self,
         tensor_dict: Dict[str, Any],
@@ -1764,6 +1773,10 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
             model_forward_end = torch.cuda.Event(enable_timing=True)
             model_forward_start.record()
 
+        if self.need_send_kv(model_input, kv_caches):
+            model_kwargs["model_input"] = model_input
+            model_kwargs["kv_caches"] = kv_caches
+
         if not bypass_model_exec:
             with set_forward_context(model_input.attn_metadata,
                                      self.vllm_config, virtual_engine):
@@ -1784,6 +1797,7 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         # Sending KV cache in distributed KV cache transfer setting
         # NOTE: the send operation is non-blocking
         if self.need_send_kv(model_input, kv_caches):
+            # TODO(Jiayi): Skip if layerwise kv transfer
             get_kv_transfer_group().send_kv_caches_and_hidden_states(
                 # model_executable is used to know which layer the current
                 # worker is working on, so that we can send KV for only those
@@ -1822,11 +1836,16 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         if model_input.async_callback is not None:
             model_input.async_callback()
 
-        # Sample the next token.
-        output: SamplerOutput = self.model.sample(
-            logits=logits,
-            sampling_metadata=model_input.sampling_metadata,
-        )
+        # in the producer side of pd disagg scenario, the next tokens are 
+        # not needed. So we skip it
+        if self.need_skip_sampling() and self._fake_sample_output is not None:
+            output = self._fake_sample_output
+        else:
+            # Sample the next token.
+            output: SamplerOutput = self.model.sample(
+                logits=logits,
+                sampling_metadata=model_input.sampling_metadata,
+            )
         if (self.observability_config is not None
                 and self.observability_config.collect_model_forward_time
                 and output is not None):
@@ -1859,6 +1878,13 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
 
             output.hidden_states = hidden_states
 
+        # save a fake output
+        if (self._fake_sample_output is None 
+                and output is not None 
+                and self.need_skip_sampling()):
+
+            self._fake_sample_output = output
+
         return [output]
 
     def need_recv_kv(self, model_input, kv_caches) -> bool:
@@ -1885,6 +1911,20 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
 
         return self.vllm_config.kv_transfer_config.is_kv_consumer and (
             not is_profile_run) and is_prefill_run
+
+    def need_skip_sampling(self) -> bool:
+        """ 
+        check whether skip the step of sampling.
+        """
+
+        if self.vllm_config.kv_transfer_config is None:
+            return False
+        
+        if not self.vllm_config.kv_transfer_config.is_kv_producer:
+            return False
+
+        return self.vllm_config.kv_transfer_config.get_from_extra_config("skip_sampling", False)
+
 
     def need_send_kv(self, model_input, kv_caches) -> bool:
         """Check if we need to send kv-cache to the other worker.
